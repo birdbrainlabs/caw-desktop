@@ -115,4 +115,5 @@ typing, and `CAW_PORT=<port>` to use another port.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+- Code: MIT, see [LICENSE](LICENSE).
+- The names Caw and Crumb: all rights reserved, see [ART-LICENSE.md](ART-LICENSE.md).
