@@ -7,6 +7,9 @@ window is focused on your computer. The phone can also move the mouse, click,
 scroll, and send Backspace or Enter. Speech recognition runs entirely on the
 phone, and the phone and computer talk only over your local network.
 
+Caw Desktop is part of the Caw family, with
+[Caw for Mac](https://github.com/birdbrainlabs/caw) and the Caw Android app.
+
 > **Status: early.** Works on Linux desktops based on wlroots (Hyprland, Sway).
 > Support for other Linux desktops (GNOME, KDE Plasma, Cinnamon, X11) and
 > Windows is in progress.
