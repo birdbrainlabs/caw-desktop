@@ -1,0 +1,35 @@
+name: Build
+
+on:
+  push:
+    branches: [master]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test
+        run: cargo test --locked
+      - name: Build
+        run: cargo build --release --locked
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp target/release/caw-desktop target/release/caw-fake-phone README.md PROTOCOL.md dist/
+          tar -czf caw-desktop-linux-x86_64.tar.gz -C dist .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: caw-desktop-linux-x86_64
+          path: caw-desktop-linux-x86_64.tar.gz
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: caw-desktop-linux-x86_64.tar.gz
