@@ -2,6 +2,8 @@
 //! into the focused window. Protocol: PROTOCOL.md.
 
 mod fixes;
+#[cfg(target_os = "linux")]
+mod linux;
 mod pointer;
 mod sendinput;
 mod settings;
@@ -429,6 +431,8 @@ async fn serve(start_pairing: bool) -> Result<()> {
     let port = std::env::var("CAW_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(DEFAULT_PORT);
 
     let saved_settings = settings::Settings::load(&dir.join("settings.json"));
+    #[cfg(target_os = "linux")]
+    log(format!("typing and mouse through {}", linux::init(&dir).await.describe()));
     let state = Arc::new(State {
         config_dir: dir,
         name: name.clone(),

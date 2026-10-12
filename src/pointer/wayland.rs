@@ -1,7 +1,7 @@
 //! Linux/Wayland: the wlr virtual-pointer protocol, which Hyprland (and other
 //! wlroots compositors) support directly.
 
-use super::{Button, Cmd};
+use super::{evdev_code, Cmd};
 use anyhow::{Context, Result};
 use std::time::Instant;
 use wayland_client::globals::{registry_queue_init, GlobalListContents};
@@ -11,11 +11,6 @@ use wayland_client::{delegate_noop, Connection, Dispatch, EventQueue, Proxy, Que
 use wayland_protocols_wlr::virtual_pointer::v1::client::zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1;
 use wayland_protocols_wlr::virtual_pointer::v1::client::zwlr_virtual_pointer_v1::ZwlrVirtualPointerV1;
 
-// Linux input event codes (input-event-codes.h)
-const BTN_LEFT: u32 = 0x110;
-const BTN_RIGHT: u32 = 0x111;
-const BTN_MIDDLE: u32 = 0x112;
-
 struct Noop;
 
 impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for Noop {
@@ -24,6 +19,17 @@ impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for Noop {
 delegate_noop!(Noop: ignore WlSeat);
 delegate_noop!(Noop: ZwlrVirtualPointerManagerV1);
 delegate_noop!(Noop: ZwlrVirtualPointerV1);
+
+/// True if the compositor offers both a virtual keyboard (used by wtype) and
+/// a virtual pointer, as wlroots compositors do. GNOME and KDE don't.
+pub fn has_virtual_input() -> bool {
+    let Ok(conn) = Connection::connect_to_env() else { return false };
+    let Ok((globals, _)) = registry_queue_init::<Noop>(&conn) else { return false };
+    globals.contents().with_list(|list| {
+        let has = |name: &str| list.iter().any(|g| g.interface == name);
+        has("zwp_virtual_keyboard_manager_v1") && has(ZwlrVirtualPointerManagerV1::interface().name)
+    })
+}
 
 pub struct Device {
     conn: Connection,
@@ -51,13 +57,8 @@ impl Device {
         match cmd {
             Cmd::Move { dx, dy } => self.pointer.motion(t, dx, dy),
             Cmd::Button { button, pressed } => {
-                let code = match button {
-                    Button::Left => BTN_LEFT,
-                    Button::Right => BTN_RIGHT,
-                    Button::Middle => BTN_MIDDLE,
-                };
                 let state = if pressed { ButtonState::Pressed } else { ButtonState::Released };
-                self.pointer.button(t, code, state);
+                self.pointer.button(t, evdev_code(button), state);
             }
             Cmd::Scroll { dx, dy } => {
                 if self.smooth_scroll {

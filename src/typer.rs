@@ -1,7 +1,6 @@
-//! Types into the focused window. Linux uses `wtype`, which talks to the
-//! compositor's virtual-keyboard protocol directly (no portal, no prompt).
-//! Windows uses SendInput with Unicode key events, so text comes out right
-//! whatever the keyboard layout.
+//! Types into the focused window. Linux uses whichever method `linux` picked
+//! for this desktop; Windows uses SendInput with Unicode key events. Both send
+//! characters rather than key positions, so any keyboard layout works.
 
 use anyhow::{bail, Result};
 
@@ -68,32 +67,51 @@ pub async fn press_key(key: &str, count: u32) -> Result<()> {
 #[cfg(target_os = "linux")]
 mod backend {
     use super::Key;
+    use crate::linux::{self, keysym, Input};
     use anyhow::{bail, Context, Result};
     use tokio::process::Command;
 
     pub async fn type_text(text: &str) -> Result<()> {
-        run(&["--", text]).await
+        match linux::get() {
+            Input::Wlr => wtype(&["--", text]).await,
+            input => tap(input, keysym::for_text(text)).await,
+        }
     }
 
     pub async fn press_key(key: Key, count: u32) -> Result<()> {
-        let name = match key {
-            Key::Backspace => "BackSpace",
-            Key::Delete => "Delete",
-            Key::Enter => "Return",
-            Key::Tab => "Tab",
-            Key::Escape => "Escape",
-            Key::Left => "Left",
-            Key::Right => "Right",
-            Key::Up => "Up",
-            Key::Down => "Down",
-            Key::Home => "Home",
-            Key::End => "End",
-        };
-        let args: Vec<&str> = std::iter::repeat_n(["-k", name], count as usize).flatten().collect();
-        run(&args).await
+        match linux::get() {
+            Input::Wlr => {
+                let name = match key {
+                    Key::Backspace => "BackSpace",
+                    Key::Delete => "Delete",
+                    Key::Enter => "Return",
+                    Key::Tab => "Tab",
+                    Key::Escape => "Escape",
+                    Key::Left => "Left",
+                    Key::Right => "Right",
+                    Key::Up => "Up",
+                    Key::Down => "Down",
+                    Key::Home => "Home",
+                    Key::End => "End",
+                };
+                let args: Vec<&str> = std::iter::repeat_n(["-k", name], count as usize).flatten().collect();
+                wtype(&args).await
+            }
+            input => tap(input, vec![keysym::for_key(key); count as usize]).await,
+        }
     }
 
-    async fn run(args: &[&str]) -> Result<()> {
+    async fn tap(input: &'static Input, keysyms: Vec<u32>) -> Result<()> {
+        match input {
+            Input::Portal(portal) => portal.tap_keysyms(&keysyms).await,
+            Input::X11(x11) => tokio::task::spawn_blocking(move || x11.tap_keysyms(&keysyms)).await?,
+            Input::Unavailable(why) => bail!("no way to type on this desktop: {why}"),
+            Input::Wlr => unreachable!(),
+        }
+    }
+
+    /// wtype talks to the compositor's virtual-keyboard protocol directly.
+    async fn wtype(args: &[&str]) -> Result<()> {
         let out = Command::new("wtype").args(args).output().await.context("running wtype (is it installed?)")?;
         if !out.status.success() {
             bail!("wtype failed: {}", String::from_utf8_lossy(&out.stderr).trim());

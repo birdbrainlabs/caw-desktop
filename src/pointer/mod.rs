@@ -1,14 +1,16 @@
 //! Moves the mouse. The input device lives on its own thread; commands go to
-//! it over a channel. Linux uses the wlr virtual-pointer protocol (Hyprland,
-//! Sway); Windows uses SendInput.
+//! it over a channel. Linux uses whichever method `crate::linux` picked for
+//! this desktop; Windows uses SendInput.
 
 use anyhow::{bail, Result};
 use std::sync::mpsc::{channel, Sender};
 
 #[cfg(target_os = "linux")]
-mod wayland;
+mod linux;
 #[cfg(target_os = "linux")]
-use wayland as backend;
+pub(crate) mod wayland;
+#[cfg(target_os = "linux")]
+use self::linux as backend;
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
@@ -50,6 +52,16 @@ impl Button {
     }
 }
 
+/// Linux evdev button codes (input-event-codes.h).
+#[cfg(target_os = "linux")]
+fn evdev_code(button: Button) -> u32 {
+    match button {
+        Button::Left => 0x110,
+        Button::Right => 0x111,
+        Button::Middle => 0x112,
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum Cmd {
     Move { dx: f64, dy: f64 },
@@ -88,7 +100,6 @@ impl Pointer {
 #[derive(Default)]
 pub struct Accum(f64);
 
-#[cfg_attr(not(windows), allow(dead_code))]
 impl Accum {
     pub fn take(&mut self, v: f64) -> i32 {
         self.0 += v;

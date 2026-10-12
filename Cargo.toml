@@ -46,5 +46,7 @@ urlencoding = "2"
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+ashpd = { version = "0.13", default-features = false, features = ["tokio", "remote_desktop", "screencast"] }
+x11rb = { version = "0.13", features = ["xtest"] }
 wayland-client = "0.31"
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }

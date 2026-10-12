@@ -10,10 +10,9 @@ phone, and the phone and computer talk only over your local network.
 Caw Desktop is part of the Caw family, with
 [Caw for Mac](https://github.com/birdbrainlabs/caw) and the Caw Android app.
 
-> **Status: early.** Works on Linux desktops based on wlroots (Hyprland, Sway)
-> and on Windows 10 and 11. Windows is tested automatically but has not yet
-> been tried by a person; please report how it goes. Support for other Linux
-> desktops (GNOME, KDE Plasma, Cinnamon, X11) is in progress.
+> **Status: early.** Used daily on Hyprland. Also works on GNOME, KDE Plasma,
+> X11 desktops (Cinnamon, XFCE, MATE) and Windows 10 and 11; those are tested
+> automatically but not yet by people, so please report how it goes.
 
 ## How it works
 
@@ -43,7 +42,18 @@ Caw can't type into those unless Caw Desktop is also run as administrator.
 
 ## Install (Linux)
 
-You need `wtype`. Either download
+Caw Desktop picks the right way to type and move the mouse on your desktop:
+
+- **GNOME and KDE Plasma (Wayland):** the first time it starts, the desktop
+  asks whether Caw Desktop may control your keyboard and mouse. Allow it; the
+  answer is remembered.
+- **X11 desktops** (Linux Mint Cinnamon, XFCE, MATE): nothing to set up.
+- **Hyprland and Sway:** install `wtype`.
+
+Characters your keyboard layout doesn't have (like "é" on a US layout) are
+typed on X11, Hyprland and Sway, but may be skipped on GNOME and KDE.
+
+Either download
 [caw-desktop-linux-x86_64.tar.gz](https://github.com/birdbrainlabs/caw-desktop/releases/latest/download/caw-desktop-linux-x86_64.tar.gz)
 from the [latest release](https://github.com/birdbrainlabs/caw-desktop/releases/latest)
 and put `caw-desktop` in `~/.local/bin/`, or build it with Rust (`cargo`):
