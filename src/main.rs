@@ -69,10 +69,11 @@ struct State {
 }
 
 impl State {
-    /// True if this exact message (same phone, id and content) was already handled recently.
-    /// Caw resends queued messages with their original ids after a reconnect.
-    fn already_handled(&self, phone_fp: &[u8; 32], msg: &Msg) -> bool {
-        let key = dedup_key(phone_fp, msg);
+    /// True if this exact message (same phone, session, id and content) was already handled recently.
+    /// Caw resends queued messages with their original ids after a reconnect; its ids restart
+    /// when the app restarts, which is why the session is part of the key.
+    fn already_handled(&self, phone_fp: &[u8; 32], session: &str, msg: &Msg) -> bool {
+        let key = dedup_key(phone_fp, session, msg);
         let now = Instant::now();
         let mut recent = self.recent.lock().unwrap();
         recent.retain(|(_, at)| now.duration_since(*at) < DEDUP_WINDOW);
@@ -87,8 +88,8 @@ impl State {
     }
 
     /// Forget a message whose handling failed, so a retry is not skipped.
-    fn forget(&self, phone_fp: &[u8; 32], msg: &Msg) {
-        let key = dedup_key(phone_fp, msg);
+    fn forget(&self, phone_fp: &[u8; 32], session: &str, msg: &Msg) {
+        let key = dedup_key(phone_fp, session, msg);
         self.recent.lock().unwrap().retain(|(k, _)| *k != key);
     }
 
@@ -179,10 +180,11 @@ impl State {
     }
 }
 
-fn dedup_key(phone_fp: &[u8; 32], msg: &Msg) -> u64 {
+fn dedup_key(phone_fp: &[u8; 32], session: &str, msg: &Msg) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     phone_fp.hash(&mut h);
+    session.hash(&mut h);
     serde_json::to_string(msg).unwrap_or_default().hash(&mut h);
     h.finish()
 }
@@ -451,6 +453,7 @@ async fn handle(state: Arc<State>, acceptor: TlsAcceptor, tcp: TcpStream, addr: 
     };
     let mut io = Framed::new(tls, LinesCodec::new_with_max_length(MAX_LINE));
     let mut authed = false;
+    let mut session = String::new();
     let mut warned_no_pointer = false;
 
     loop {
@@ -491,7 +494,7 @@ async fn handle(state: Arc<State>, acceptor: TlsAcceptor, tcp: TcpStream, addr: 
                     bail!("pairing refused: {reason}");
                 }
             },
-            Msg::Hello { v, .. } if !authed => {
+            Msg::Hello { v, session: s, .. } if !authed => {
                 if !state.is_trusted(&peer_fp) {
                     send(&mut io, Msg::Error { id: None, reason: "not_paired".into() }).await?;
                     bail!("unknown phone, disconnecting");
@@ -500,6 +503,7 @@ async fn handle(state: Arc<State>, acceptor: TlsAcceptor, tcp: TcpStream, addr: 
                     log(format!("{addr}: phone speaks protocol v{v}, this is v{VERSION}"));
                 }
                 authed = true;
+                session = s.unwrap_or_default();
                 log(format!("{addr}: connected ({})", short_id(&peer_fp)));
                 send(&mut io, Msg::HelloOk { desktop_name: state.name.clone() }).await?;
             }
@@ -532,7 +536,7 @@ async fn handle(state: Arc<State>, acceptor: TlsAcceptor, tcp: TcpStream, addr: 
                     send(&mut io, Msg::Ack { id }).await?;
                 }
             }
-            ref m @ (Msg::Text { id, .. } | Msg::Key { id, .. }) if state.already_handled(&peer_fp, m) => {
+            ref m @ (Msg::Text { id, .. } | Msg::Key { id, .. }) if state.already_handled(&peer_fp, &session, m) => {
                 log(format!("{addr}: skipped resent message {id}"));
                 send(&mut io, Msg::Ack { id }).await?;
             }
@@ -566,7 +570,7 @@ async fn handle(state: Arc<State>, acceptor: TlsAcceptor, tcp: TcpStream, addr: 
                     typer::type_text(&text).await
                 };
                 if result.is_err() {
-                    state.forget(&peer_fp, &original);
+                    state.forget(&peer_fp, &session, &original);
                 }
                 send(&mut io, ack_or_error(id, result)).await?;
             }
@@ -576,7 +580,7 @@ async fn handle(state: Arc<State>, acceptor: TlsAcceptor, tcp: TcpStream, addr: 
                     typer::press_key(&key, count).await
                 };
                 if result.is_err() {
-                    state.forget(&peer_fp, &Msg::Key { id, key, count });
+                    state.forget(&peer_fp, &session, &Msg::Key { id, key, count });
                 }
                 send(&mut io, ack_or_error(id, result)).await?;
             }
@@ -619,4 +623,17 @@ where
 {
     io.send(serde_json::to_string(&msg)?).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn restarted_app_is_not_a_resend() {
+        let fp = [7u8; 32];
+        let enter = Msg::Key { id: 1, key: "enter".into(), count: 1 };
+        assert_eq!(dedup_key(&fp, "a", &enter), dedup_key(&fp, "a", &enter));
+        assert_ne!(dedup_key(&fp, "a", &enter), dedup_key(&fp, "b", &enter));
+    }
 }

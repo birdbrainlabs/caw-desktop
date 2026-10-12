@@ -21,7 +21,13 @@ pub enum Msg {
     PairRequest { v: u32, device_id: String, device_name: String, proof: String },
     PairOk { desktop_id: String, desktop_name: String, proof: String },
     PairError { reason: String },
-    Hello { v: u32, device_id: String },
+    Hello {
+        v: u32,
+        device_id: String,
+        /// Random per app start, so message ids that restart at 1 are not taken for resends.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<String>,
+    },
     HelloOk { desktop_name: String },
     Text { id: u64, text: String },
     Key { id: u64, key: String, #[serde(default = "one")] count: u32 },

@@ -95,7 +95,9 @@ The phone can view and change the computer's settings. Desktop v3 still accepts 
 
 ## Resends
 
-Caw Desktop remembers handled `text` and `key` messages (per phone, by id and content) for 10 minutes. A resend after a reconnect is acknowledged without being typed again. If typing failed, the message is not remembered, so a retry still works.
+Caw Desktop remembers handled `text` and `key` messages (per phone and session, by id and content) for 10 minutes. A resend after a reconnect is acknowledged without being typed again. If typing failed, the message is not remembered, so a retry still works.
+
+The phone should send a `session` in `hello`: a random string made once per app start and kept across reconnects, e.g. `{"type":"hello","v":3,"device_id":"…","session":"9f2c41d07ab3e655"}`. When the app restarts and its ids start again at 1, the new session keeps new messages from being mistaken for resends. Without a `session`, all connections from that phone count as one session.
 
 ## Word fixes on the desktop
 

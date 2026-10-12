@@ -21,6 +21,12 @@ use tokio_util::codec::{Framed, LinesCodec};
 
 type Conn = Framed<TlsStream<TcpStream>, LinesCodec>;
 
+/// One session per run, like one per app start on the phone.
+fn session_tag() -> String {
+    static SESSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    SESSION.get_or_init(|| format!("{:016x}", rand::random::<u64>())).clone()
+}
+
 /// A fresh message id per run, like a phone's increasing counter.
 fn next_id() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(1)
@@ -62,7 +68,8 @@ async fn recv(io: &mut Conn) -> Result<Msg> {
 }
 
 async fn hello(io: &mut Conn, identity: &Identity) -> Result<()> {
-    send(io, &Msg::Hello { v: VERSION, device_id: short_id(&identity.fingerprint()) }).await?;
+    let device_id = short_id(&identity.fingerprint());
+    send(io, &Msg::Hello { v: VERSION, device_id, session: Some(session_tag()) }).await?;
     match recv(io).await? {
         Msg::HelloOk { desktop_name } => {
             println!("connected to {desktop_name}");
