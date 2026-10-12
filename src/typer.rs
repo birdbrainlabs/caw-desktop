@@ -148,8 +148,9 @@ pub async fn press_key(key: Key, mods: &[Mod], count: u32) -> Result<()> {
 #[cfg(target_os = "linux")]
 mod backend {
     use super::{Key, Mod, PUNCTUATION};
-    use crate::linux::{self, evdev, keysym, Input};
+    use crate::linux::{self, evdev, keysym, vkbd, Input};
     use anyhow::{bail, Context, Result};
+    use std::sync::Once;
     use tokio::process::Command;
 
     pub async fn type_text(text: &str) -> Result<()> {
@@ -161,14 +162,21 @@ mod backend {
 
     pub async fn press_key(key: Key, mods: &[Mod], count: u32) -> Result<()> {
         match linux::get() {
-            Input::Wlr => {
-                // One wtype run holds the modifiers (-M), taps the key (-k) and releases them (-m).
-                let name = wtype_name(key);
-                let mut args: Vec<&str> = mods.iter().flat_map(|&m| ["-M", wtype_mod(m)]).collect();
-                args.extend(std::iter::repeat_n(["-k", name.as_str()], count as usize).flatten());
-                args.extend(mods.iter().rev().flat_map(|&m| ["-m", wtype_mod(m)]));
-                wtype(&args).await
+            // Combos go through our own virtual keyboard, which keeps the seat's
+            // keymap so compositor shortcuts see the right keys; wtype is the fallback.
+            Input::Wlr if !mods.is_empty() => {
+                let held = mods.to_vec();
+                let pressed = tokio::task::spawn_blocking(move || vkbd::Keyboard::open().map(|mut kb| kb.press(key, &held, count))).await?;
+                match pressed {
+                    Ok(result) => result,
+                    Err(why) => {
+                        static LOGGED: Once = Once::new();
+                        LOGGED.call_once(|| eprintln!("caw-desktop: pressing key combos with wtype, so desktop shortcuts may get the wrong key: {why:#}"));
+                        wtype_press(key, mods, count).await
+                    }
+                }
             }
+            Input::Wlr => wtype_press(key, mods, count).await,
             // Bare keys are tapped like typed text; combos hold their modifiers.
             Input::Portal(portal) if !mods.is_empty() => {
                 let mods: Vec<u32> = mods.iter().map(|&m| evdev::for_mod(m)).collect();
@@ -180,6 +188,15 @@ mod backend {
             }
             input => tap(input, vec![keysym::for_key(key); count as usize]).await,
         }
+    }
+
+    /// One wtype run holds the modifiers (-M), taps the key (-k) and releases them (-m).
+    async fn wtype_press(key: Key, mods: &[Mod], count: u32) -> Result<()> {
+        let name = wtype_name(key);
+        let mut args: Vec<&str> = mods.iter().flat_map(|&m| ["-M", wtype_mod(m)]).collect();
+        args.extend(std::iter::repeat_n(["-k", name.as_str()], count as usize).flatten());
+        args.extend(mods.iter().rev().flat_map(|&m| ["-m", wtype_mod(m)]));
+        wtype(&args).await
     }
 
     fn wtype_name(key: Key) -> String {

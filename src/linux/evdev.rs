@@ -1,6 +1,6 @@
 //! Linux evdev keycodes (linux/input-event-codes.h): key positions on a US
-//! keyboard. The portal takes these for key combos, which desktops match by
-//! key position plus modifiers.
+//! keyboard. The portal and `vkbd` take these for key combos, which desktops
+//! match by key position plus modifiers.
 
 use crate::typer::{Key, Mod};
 

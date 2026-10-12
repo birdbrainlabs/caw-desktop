@@ -49,4 +49,5 @@ windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_Inpu
 ashpd = { version = "0.13", default-features = false, features = ["tokio", "remote_desktop", "screencast"] }
 x11rb = { version = "0.13", features = ["xtest"] }
 wayland-client = "0.31"
+wayland-protocols-misc = { version = "0.3", features = ["client"] }
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }

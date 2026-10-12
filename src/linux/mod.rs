@@ -8,6 +8,7 @@
 pub mod evdev;
 pub mod keysym;
 mod portal;
+pub mod vkbd;
 mod x11;
 
 use anyhow::{bail, Result};
