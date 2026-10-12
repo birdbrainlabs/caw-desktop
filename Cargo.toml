@@ -1,6 +1,6 @@
 [package]
 name = "caw-desktop"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Types text dictated in the Caw phone app into the focused window"
 license = "MIT"
