@@ -26,8 +26,8 @@ See [Security](#security) and [PROTOCOL.md](PROTOCOL.md).
 
 ## Install (Windows)
 
-1. Download `caw-desktop-windows-x86_64.zip` from the
-   [latest build](https://github.com/birdbrainlabs/caw-desktop/actions) or release,
+1. Download [caw-desktop-windows-x86_64.zip](https://github.com/birdbrainlabs/caw-desktop/releases/latest/download/caw-desktop-windows-x86_64.zip)
+   from the [latest release](https://github.com/birdbrainlabs/caw-desktop/releases/latest)
    and unzip it into a folder you'll keep, e.g. `Documents\Caw Desktop`.
 2. Double-click `caw-desktop.exe`. Windows may say it "protected your PC"
    because the app isn't signed yet: click **More info → Run anyway**.
@@ -43,7 +43,10 @@ Caw can't type into those unless Caw Desktop is also run as administrator.
 
 ## Install (Linux)
 
-You need Rust (`cargo`) and `wtype`.
+You need `wtype`. Either download
+[caw-desktop-linux-x86_64.tar.gz](https://github.com/birdbrainlabs/caw-desktop/releases/latest/download/caw-desktop-linux-x86_64.tar.gz)
+from the [latest release](https://github.com/birdbrainlabs/caw-desktop/releases/latest)
+and put `caw-desktop` in `~/.local/bin/`, or build it with Rust (`cargo`):
 
 ```sh
 git clone https://github.com/birdbrainlabs/caw-desktop
