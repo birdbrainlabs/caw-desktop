@@ -34,6 +34,10 @@ pub fn get() -> &'static Input {
 pub async fn init(config_dir: &Path) -> &'static Input {
     let choice = std::env::var("CAW_INPUT").unwrap_or_default();
     let input = pick(&choice, config_dir).await.unwrap_or_else(|e| Input::Unavailable(format!("{e:#}")));
+    if let Input::Wlr = input {
+        // Read now, before wtype types anything and its keymap becomes the seat's.
+        let _ = vkbd::remember_seat_keymap();
+    }
     let _ = INPUT.set(input);
     get()
 }

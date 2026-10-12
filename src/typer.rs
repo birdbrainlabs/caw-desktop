@@ -162,7 +162,7 @@ mod backend {
 
     pub async fn press_key(key: Key, mods: &[Mod], count: u32) -> Result<()> {
         match linux::get() {
-            // Combos go through our own virtual keyboard, which keeps the seat's
+            // Combos go through our own virtual keyboard, which has an evdev
             // keymap so compositor shortcuts see the right keys; wtype is the fallback.
             Input::Wlr if !mods.is_empty() => {
                 let held = mods.to_vec();
