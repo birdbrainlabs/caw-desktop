@@ -19,10 +19,12 @@ jobs:
         run: cargo test --locked
       - name: Build
         run: cargo build --release --locked
+      - name: End-to-end test
+        run: scripts/e2e.sh
       - name: Package
         run: |
           mkdir -p dist
-          cp target/release/caw-desktop target/release/caw-fake-phone README.md PROTOCOL.md dist/
+          cp target/release/caw-desktop target/release/caw-fake-phone README.md PROTOCOL.md LICENSE ART-LICENSE.md dist/
           tar -czf caw-desktop-linux-x86_64.tar.gz -C dist .
       - uses: actions/upload-artifact@v4
         with:
@@ -33,3 +35,35 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: caw-desktop-linux-x86_64.tar.gz
+
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test
+        run: cargo test --locked
+      - name: Build
+        run: cargo build --release --locked
+      - name: End-to-end test
+        run: scripts/e2e.sh
+      # Moves the real mouse and types into a real text box on the runner's desktop.
+      - name: Real keyboard and mouse test
+        run: cargo test --release --locked -- --ignored --test-threads=1
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory dist | Out-Null
+          Copy-Item target/release/caw-desktop.exe, target/release/caw-fake-phone.exe, README.md, PROTOCOL.md, LICENSE, ART-LICENSE.md, "windows/Pair phone.cmd" dist/
+          Compress-Archive -Path dist/* -DestinationPath caw-desktop-windows-x86_64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: caw-desktop-windows-x86_64
+          path: caw-desktop-windows-x86_64.zip
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: caw-desktop-windows-x86_64.zip

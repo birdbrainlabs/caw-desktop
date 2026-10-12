@@ -63,12 +63,14 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "socket2 0.5.10",
  "tokio",
  "tokio-rustls",
  "tokio-util",
  "urlencoding",
  "wayland-client",
  "wayland-protocols-wlr",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

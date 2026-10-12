@@ -1,9 +1,9 @@
 //! Caw Desktop: receives dictated text from the Caw phone app and types it
 //! into the focused window. Protocol: PROTOCOL.md.
 
-#[cfg(target_os = "linux")]
-mod pointer;
 mod fixes;
+mod pointer;
+mod sendinput;
 mod settings;
 mod typer;
 
@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::{TcpListener, TcpStream, UnixListener, UnixStream};
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
 use tokio::time::timeout;
 use tokio_rustls::TlsAcceptor;
@@ -215,8 +215,85 @@ fn config_dir() -> Result<PathBuf> {
     Ok(dirs::config_dir().context("no config directory")?.join("caw-desktop"))
 }
 
-fn control_socket() -> PathBuf {
-    dirs::runtime_dir().unwrap_or_else(std::env::temp_dir).join("caw-desktop.sock")
+/// The local channel `caw-desktop pair` uses to reach the running receiver:
+/// a socket file in the private runtime folder on Linux, a named pipe on Windows.
+#[cfg(unix)]
+mod control {
+    use std::io::Result;
+    use std::path::PathBuf;
+    use tokio::net::{UnixListener, UnixStream};
+
+    fn path() -> PathBuf {
+        dirs::runtime_dir().unwrap_or_else(std::env::temp_dir).join("caw-desktop.sock")
+    }
+
+    pub async fn connect() -> Result<UnixStream> {
+        UnixStream::connect(path()).await
+    }
+
+    pub struct Listener(UnixListener);
+
+    impl Listener {
+        pub fn bind() -> Result<Self> {
+            let _ = std::fs::remove_file(path());
+            UnixListener::bind(path()).map(Self)
+        }
+
+        pub async fn accept(&mut self) -> Result<UnixStream> {
+            Ok(self.0.accept().await?.0)
+        }
+    }
+}
+
+#[cfg(windows)]
+mod control {
+    use std::io::Result;
+    use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeClient, NamedPipeServer, ServerOptions};
+
+    fn name() -> String {
+        let user = std::env::var("USERNAME").unwrap_or_default();
+        format!(r"\\.\pipe\caw-desktop-{user}")
+    }
+
+    pub async fn connect() -> Result<NamedPipeClient> {
+        ClientOptions::new().open(name())
+    }
+
+    pub struct Listener(NamedPipeServer);
+
+    impl Listener {
+        pub fn bind() -> Result<Self> {
+            ServerOptions::new().first_pipe_instance(true).create(name()).map(Self)
+        }
+
+        /// Waits for a client, then opens the next pipe instance for the one after.
+        pub async fn accept(&mut self) -> Result<NamedPipeServer> {
+            self.0.connect().await?;
+            let next = ServerOptions::new().create(name())?;
+            Ok(std::mem::replace(&mut self.0, next))
+        }
+    }
+}
+
+/// Listens on IPv6 and IPv4 at once. Phones that find the computer by mDNS may
+/// only get its IPv6 address. Windows needs dual-stack asked for explicitly.
+fn listen(port: u16) -> Result<TcpListener> {
+    use socket2::{Domain, Protocol, Socket, Type};
+    let dual_stack = || -> std::io::Result<std::net::TcpListener> {
+        let socket = Socket::new(Domain::IPV6, Type::STREAM, Some(Protocol::TCP))?;
+        socket.set_only_v6(false)?;
+        #[cfg(unix)]
+        socket.set_reuse_address(true)?;
+        socket.bind(&SocketAddr::from((std::net::Ipv6Addr::UNSPECIFIED, port)).into())?;
+        socket.listen(128)?;
+        Ok(socket.into())
+    };
+    let listener = match dual_stack() {
+        Ok(l) => l,
+        Err(_) => std::net::TcpListener::bind(("0.0.0.0", port)).with_context(|| format!("listening on port {port}"))?,
+    };
+    listener.set_nonblocking(true)?;
+    Ok(TcpListener::from_std(listener)?)
 }
 
 fn log(msg: impl AsRef<str>) {
@@ -302,9 +379,9 @@ async fn main() -> Result<()> {
 
 /// Ask a running receiver for a pairing code; start one if none is running.
 async fn pair() -> Result<()> {
-    match UnixStream::connect(control_socket()).await {
+    match control::connect().await {
         Ok(stream) => {
-            let (read, mut write) = stream.into_split();
+            let (read, mut write) = tokio::io::split(stream);
             write.write_all(b"pair\n").await?;
             let mut lines = BufReader::new(read).lines();
             let first = lines.next_line().await?.context("receiver closed the connection")?;
@@ -368,11 +445,7 @@ async fn serve(start_pairing: bool) -> Result<()> {
         log(format!("word fixes disabled: {e:#}"));
     }
 
-    // "::" also accepts IPv4 on Linux; phones that find the computer by mDNS may only get its IPv6 address.
-    let listener = match TcpListener::bind(("::", port)).await {
-        Ok(l) => l,
-        Err(_) => TcpListener::bind(("0.0.0.0", port)).await.with_context(|| format!("listening on port {port}"))?,
-    };
+    let listener = listen(port)?;
     let acceptor = TlsAcceptor::from(tlsconf::server_config(&identity)?);
     log(format!("listening on {}:{port} as {name:?} (id {})", local_ip(), short_id(&state.fp)));
 
@@ -415,17 +488,15 @@ fn advertise(state: &State) -> Result<mdns_sd::ServiceDaemon> {
 
 /// Local control socket used by `caw-desktop pair` while the receiver runs.
 async fn control_loop(state: Arc<State>) {
-    let path = control_socket();
-    let _ = std::fs::remove_file(&path);
-    let listener = match UnixListener::bind(&path) {
+    let mut listener = match control::Listener::bind() {
         Ok(l) => l,
-        Err(e) => return log(format!("control socket disabled: {e}")),
+        Err(e) => return log(format!("control channel disabled: {e}")),
     };
     loop {
-        let Ok((stream, _)) = listener.accept().await else { continue };
+        let Ok(stream) = listener.accept().await else { continue };
         let state = state.clone();
         tokio::spawn(async move {
-            let (read, mut write) = stream.into_split();
+            let (read, mut write) = tokio::io::split(stream);
             let mut lines = BufReader::new(read).lines();
             if !matches!(lines.next_line().await, Ok(Some(l)) if l.trim() == "pair") {
                 return;
