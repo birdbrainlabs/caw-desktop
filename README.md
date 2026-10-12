@@ -10,9 +10,10 @@ phone, and the phone and computer talk only over your local network.
 Caw Desktop is part of the Caw family, with
 [Caw for Mac](https://github.com/birdbrainlabs/caw) and the Caw Android app.
 
-> **Status: early.** Works on Linux desktops based on wlroots (Hyprland, Sway).
-> Support for other Linux desktops (GNOME, KDE Plasma, Cinnamon, X11) and
-> Windows is in progress.
+> **Status: early.** Works on Linux desktops based on wlroots (Hyprland, Sway)
+> and on Windows 10 and 11. Windows is tested automatically but has not yet
+> been tried by a person; please report how it goes. Support for other Linux
+> desktops (GNOME, KDE Plasma, Cinnamon, X11) is in progress.
 
 ## How it works
 
@@ -22,6 +23,23 @@ Caw Desktop is part of the Caw family, with
 
 The connection is encrypted, and only phones you have paired can connect.
 See [Security](#security) and [PROTOCOL.md](PROTOCOL.md).
+
+## Install (Windows)
+
+1. Download `caw-desktop-windows-x86_64.zip` from the
+   [latest build](https://github.com/birdbrainlabs/caw-desktop/actions) or release,
+   and unzip it into a folder you'll keep, e.g. `Documents\Caw Desktop`.
+2. Double-click `caw-desktop.exe`. Windows may say it "protected your PC"
+   because the app isn't signed yet: click **More info → Run anyway**.
+3. When Windows Firewall asks, allow access on **private networks**, so the
+   phone can reach it. A console window stays open while Caw Desktop runs.
+4. Double-click `Pair phone.cmd` and scan the QR code with Caw.
+
+To start it automatically, press **Win+R**, type `shell:startup`, and put a
+shortcut to `caw-desktop.exe` in the folder that opens.
+
+Windows doesn't let normal apps type into apps running as administrator, so
+Caw can't type into those unless Caw Desktop is also run as administrator.
 
 ## Install (Linux)
 
