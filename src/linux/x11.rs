@@ -105,6 +105,53 @@ impl X11 {
         self.sync()
     }
 
+    /// Holds the modifier keysyms, taps `key` `count` times, then releases the
+    /// modifiers in reverse order, even if a tap failed. Nothing is pressed
+    /// if a modifier is missing from the layout.
+    pub fn tap_combo(&self, mods: &[u32], key: u32, count: u32) -> Result<()> {
+        let _turn = self.typing.lock().unwrap();
+        let map = self.keymap()?;
+        let mod_codes = mods
+            .iter()
+            .map(|&m| map.find(m).map(|(code, _)| code).with_context(|| format!("the keyboard layout has no modifier key {m:#x}")))
+            .collect::<Result<Vec<u8>>>()?;
+        // A key that needs Shift on this layout would arrive with an extra modifier: borrow the spare key.
+        let (code, borrowed) = match map.find(key) {
+            Some((code, false)) => (code, None),
+            _ => {
+                let Some(spare) = map.spare() else { bail!("the keyboard layout has no room for keysym {key:#x}") };
+                self.conn.change_keyboard_mapping(1, spare, map.per_code as u8, &vec![key; map.per_code])?;
+                self.sync()?;
+                std::thread::sleep(Duration::from_millis(25));
+                (spare, Some(spare))
+            }
+        };
+        let mut held = Vec::new();
+        let mut result = Ok(());
+        for &m in &mod_codes {
+            result = self.fake(KEY_PRESS_EVENT, m, 0, 0);
+            if result.is_err() {
+                break;
+            }
+            held.push(m);
+        }
+        for _ in 0..count {
+            if result.is_err() {
+                break;
+            }
+            result = self.fake(KEY_PRESS_EVENT, code, 0, 0).and_then(|()| self.fake(KEY_RELEASE_EVENT, code, 0, 0));
+        }
+        for &m in held.iter().rev() {
+            result = result.and(self.fake(KEY_RELEASE_EVENT, m, 0, 0));
+        }
+        if let Some(spare) = borrowed {
+            self.sync()?;
+            std::thread::sleep(Duration::from_millis(25));
+            self.conn.change_keyboard_mapping(1, spare, map.per_code as u8, &vec![0; map.per_code])?;
+        }
+        result.and(self.sync())
+    }
+
     pub fn motion(&self, dx: i16, dy: i16) -> Result<()> {
         // detail 1: relative to the current position.
         self.fake(MOTION_NOTIFY_EVENT, 1, dx, dy)?;
@@ -189,6 +236,37 @@ mod desktop_tests {
         std::thread::sleep(Duration::from_millis(100));
         input.tap_keysyms(&keysym::for_text("Hi é")).unwrap();
         assert_eq!(reader.join().unwrap(), vec![0x48, 0x69, 0x20, 0xe9]);
+    }
+
+    #[test]
+    #[ignore = "presses keys in a real window; needs an X11 display"]
+    fn presses_a_combo() {
+        let input = X11::open().unwrap();
+        let (app, screen) = x11rb::connect(None).unwrap();
+        let root = app.setup().roots[screen].root;
+        let win = app.generate_id().unwrap();
+        let events = EventMask::KEY_PRESS | EventMask::KEY_RELEASE;
+        app.create_window(x11rb::COPY_DEPTH_FROM_PARENT, win, root, 0, 0, 300, 200, 0, WindowClass::INPUT_OUTPUT, 0, &CreateWindowAux::new().event_mask(events)).unwrap();
+        app.map_window(win).unwrap();
+        app.flush().unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        app.set_input_focus(InputFocus::PARENT, win, x11rb::CURRENT_TIME).unwrap();
+        app.get_input_focus().unwrap().reply().unwrap();
+
+        let ctrl = keysym::for_mod(crate::typer::Mod::Ctrl);
+        let t = keysym::for_key(crate::typer::Key::Char('t'));
+        input.tap_combo(&[ctrl], t, 2).unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        // An event's state is from just before it, so only the two T presses count.
+        let mut taps = 0;
+        while let Some(event) = app.poll_for_event().unwrap() {
+            if let Event::KeyPress(k) = event {
+                taps += (u16::from(k.state) & u16::from(KeyButMask::CONTROL) != 0) as u32;
+            }
+        }
+        assert_eq!(taps, 2);
+        let keys = app.query_keymap().unwrap().reply().unwrap().keys;
+        assert!(keys.iter().all(|&b| b == 0), "a key is still held down");
     }
 
     #[test]

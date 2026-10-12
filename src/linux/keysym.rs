@@ -1,7 +1,7 @@
 //! X keysyms: the layout-independent key names that both the remote-desktop
 //! portal and X11 understand.
 
-use crate::typer::Key;
+use crate::typer::{Key, Mod};
 
 pub const SHIFT_L: u32 = 0xffe1;
 
@@ -18,6 +18,22 @@ pub fn for_key(key: Key) -> u32 {
         Key::Down => 0xff54,
         Key::End => 0xff57,
         Key::Delete => 0xffff,
+        Key::Space => 0x20,
+        Key::PageUp => 0xff55,
+        Key::PageDown => 0xff56,
+        Key::Insert => 0xff63,
+        Key::F(n) => 0xffbe + u32::from(n) - 1,
+        // Letters, digits and ASCII punctuation are their own keysyms.
+        Key::Char(c) => c as u32,
+    }
+}
+
+pub fn for_mod(m: Mod) -> u32 {
+    match m {
+        Mod::Super => 0xffeb,
+        Mod::Ctrl => 0xffe3,
+        Mod::Alt => 0xffe9,
+        Mod::Shift => SHIFT_L,
     }
 }
 
@@ -44,5 +60,10 @@ mod tests {
     fn text_to_keysyms() {
         assert_eq!(for_text("Aé\r\n€"), vec![0x41, 0xe9, 0xff0d, 0x0100_20ac]);
         assert_eq!(for_key(Key::Backspace), 0xff08);
+        assert_eq!(for_key(Key::F(1)), 0xffbe);
+        assert_eq!(for_key(Key::F(12)), 0xffc9);
+        assert_eq!(for_key(Key::Char('t')), 0x74);
+        assert_eq!(for_key(Key::Char('[')), 0x5b);
+        assert_eq!(for_mod(Mod::Super), 0xffeb);
     }
 }

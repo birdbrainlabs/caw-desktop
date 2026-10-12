@@ -1,4 +1,4 @@
-# Caw Remote Protocol (v3)
+# Caw Remote Protocol (v4)
 
 How the Caw phone app sends dictated text (and later, mouse input) to Caw Desktop.
 
@@ -92,6 +92,46 @@ The phone can view and change the computer's settings. Desktop v3 still accepts 
 - `word_fixes` in `settings_set` **replaces the whole list**: send the full edited map. Keys are matched as whole phrases, case-insensitively, and are stored lowercase.
 - Limits: `pointer_speed` 0.1–10, `pointer_accel` 0–1, at most 500 word fixes, each phrase and replacement up to 100 characters.
 - Changes apply immediately and are saved on the computer, so they follow the computer, not the phone.
+
+## v4: shortcuts
+
+Shortcut buttons on the phone press key combos on the computer, e.g. a "Terminal"
+button that presses Super+Enter. Desktop v4 still accepts v1–v3 phones.
+
+`key` may carry modifiers:
+
+```json
+{"type":"key","id":9,"key":"enter","mods":["super"],"count":1}
+```
+
+- `mods` is optional (absent or `[]` = none). Allowed: `super` (the Windows key;
+  Command on a Mac keyboard), `ctrl`, `alt`, `shift`, in any order, each at most once.
+- `key` values, in addition to the v1 ones: `a`–`z`, `0`–`9`, `f1`–`f12`, `space`,
+  `page_up`, `page_down`, `insert`, and the punctuation keys `minus`, `equal`,
+  `comma`, `period`, `slash`, `semicolon`, `apostrophe`, `bracket_left`,
+  `bracket_right`, `backslash`, `grave` (named after a US keyboard).
+- The desktop presses the modifiers (super, ctrl, alt, shift), taps the key `count`
+  times, then releases the modifiers in reverse order, also when a tap fails.
+- Unknown key or modifier, or a modifier listed twice: `{"type":"error","id":9,"reason":"unknown_key"}`,
+  and nothing is pressed.
+- `mods` is part of the message for resend detection: Super+Enter is not a resend of Enter.
+- A v3 desktop ignores `mods` and would press the bare key, so the phone sends `mods` only
+  to a desktop whose `settings` include `shortcuts`.
+
+`settings` gains the ordered list of shortcuts, and `settings_set` may carry `shortcuts`,
+which **replaces the whole list**:
+
+```json
+{"type":"settings","id":7,"desktop_name":"my-laptop","desktop_version":"0.3.0","word_fixes":{},"pointer_speed":1.5,"pointer_accel":0.05,"shortcuts":[{"name":"Terminal","key":"enter","mods":["super"]}]}
+{"type":"settings_set","id":8,"shortcuts":[{"name":"Terminal","key":"enter","mods":["super"]},{"name":"New tab","key":"t","mods":["ctrl"]}]}
+```
+
+- Limits: at most 48 shortcuts; `name` 1–30 characters after trimming spaces (names may
+  repeat); `key` and `mods` as for `key` (`mods` may be empty or absent). Anything invalid
+  refuses the whole `settings_set` with `invalid_settings: …` and nothing changes.
+- The desktop stores names trimmed and `mods` in pressing order (super, ctrl, alt, shift).
+- None by default. They are saved on the computer in `~/.config/caw-desktop/shortcuts.json`
+  and can also be edited there with `caw-desktop shortcuts`.
 
 ## Resends
 

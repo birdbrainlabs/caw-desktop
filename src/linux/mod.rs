@@ -5,6 +5,7 @@
 //!
 //! `CAW_INPUT=wlr|portal|x11` overrides the choice.
 
+pub mod evdev;
 pub mod keysym;
 mod portal;
 mod x11;

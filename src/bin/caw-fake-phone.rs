@@ -7,7 +7,7 @@ use anyhow::{bail, ensure, Context, Result};
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use caw_desktop::identity::{fingerprint, hex, short_id, Identity};
 use caw_desktop::pairing::{self, LABEL_DESKTOP, LABEL_PHONE};
-use caw_desktop::proto::{Msg, PairUri, MAX_LINE, VERSION};
+use caw_desktop::proto::{Msg, PairUri, Shortcut, MAX_LINE, VERSION};
 use caw_desktop::tlsconf;
 use futures::{SinkExt, StreamExt};
 use rustls::pki_types::ServerName;
@@ -156,7 +156,20 @@ async fn main() -> Result<()> {
             let count = args.get(2).map(|c| c.parse()).transpose()?.unwrap_or(1);
             let mut io = session(&identity).await?;
             let id = next_id();
-            send(&mut io, &Msg::Key { id, key: key.clone(), count }).await?;
+            send(&mut io, &Msg::Key { id, key: key.clone(), mods: vec![], count }).await?;
+            expect_ack(&mut io, id).await?;
+            SinkExt::<String>::close(&mut io).await?;
+            println!("sent");
+            Ok(())
+        }
+        Some("combo") => {
+            // caw-fake-phone combo super+enter  (v4: a key with modifiers)
+            let combo = args.get(1).context("usage: caw-fake-phone combo <combo, e.g. ctrl+shift+t> [count]")?;
+            let count = args.get(2).map(|c| c.parse()).transpose()?.unwrap_or(1);
+            let (key, mods) = Shortcut::parse_combo(combo);
+            let mut io = session(&identity).await?;
+            let id = next_id();
+            send(&mut io, &Msg::Key { id, key, mods, count }).await?;
             expect_ack(&mut io, id).await?;
             SinkExt::<String>::close(&mut io).await?;
             println!("sent");
@@ -191,10 +204,13 @@ async fn main() -> Result<()> {
             let id = next_id();
             send(&mut io, &Msg::SettingsGet { id }).await?;
             match recv(&mut io).await? {
-                Msg::Settings { word_fixes, pointer_speed, pointer_accel, desktop_version, .. } => {
+                Msg::Settings { word_fixes, pointer_speed, pointer_accel, desktop_version, shortcuts, .. } => {
                     println!("desktop version {desktop_version}, pointer speed {pointer_speed}, accel {pointer_accel}");
                     for (heard, fixed) in word_fixes {
                         println!("  {heard:?} -> {fixed:?}");
+                    }
+                    for s in shortcuts {
+                        println!("  shortcut {:?} = {}", s.name, s.combo());
                     }
                 }
                 other => bail!("unexpected reply {other:?}"),
@@ -205,7 +221,7 @@ async fn main() -> Result<()> {
             let speed: f64 = args.get(1).context("usage: caw-fake-phone set-speed <speed>")?.parse()?;
             let mut io = session(&identity).await?;
             let id = next_id();
-            send(&mut io, &Msg::SettingsSet { id, word_fixes: None, pointer_speed: Some(speed), pointer_accel: None }).await?;
+            send(&mut io, &Msg::SettingsSet { id, word_fixes: None, pointer_speed: Some(speed), pointer_accel: None, shortcuts: None }).await?;
             expect_ack(&mut io, id).await?;
             finish(&mut io).await
         }
@@ -215,10 +231,20 @@ async fn main() -> Result<()> {
             let word_fixes = serde_json::from_str(json)?;
             let mut io = session(&identity).await?;
             let id = next_id();
-            send(&mut io, &Msg::SettingsSet { id, word_fixes: Some(word_fixes), pointer_speed: None, pointer_accel: None }).await?;
+            send(&mut io, &Msg::SettingsSet { id, word_fixes: Some(word_fixes), pointer_speed: None, pointer_accel: None, shortcuts: None }).await?;
             expect_ack(&mut io, id).await?;
             finish(&mut io).await
         }
-        _ => bail!("usage: caw-fake-phone pair <link> | send <text> | key <name> [count] | move <dx> <dy> | click [left|right|middle] | scroll <dy> | settings | set-speed <n> | set-fixes '<json>'"),
+        Some("set-shortcuts") => {
+            // caw-fake-phone set-shortcuts '[{"name":"Terminal","key":"enter","mods":["super"]}]'  (replaces the whole list)
+            let json = args.get(1).context("usage: caw-fake-phone set-shortcuts '<json array>'")?;
+            let shortcuts = serde_json::from_str(json)?;
+            let mut io = session(&identity).await?;
+            let id = next_id();
+            send(&mut io, &Msg::SettingsSet { id, word_fixes: None, pointer_speed: None, pointer_accel: None, shortcuts: Some(shortcuts) }).await?;
+            expect_ack(&mut io, id).await?;
+            finish(&mut io).await
+        }
+        _ => bail!("usage: caw-fake-phone pair <link> | send <text> | key <name> [count] | combo <combo> [count] | move <dx> <dy> | click [left|right|middle] | scroll <dy> | settings | set-speed <n> | set-fixes '<json>' | set-shortcuts '<json>'"),
     }
 }

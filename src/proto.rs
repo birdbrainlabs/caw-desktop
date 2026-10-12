@@ -1,7 +1,7 @@
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 pub const DEFAULT_PORT: u16 = 47820;
 pub const SERVICE_TYPE: &str = "_caw._tcp.local.";
 pub const MAX_LINE: usize = 64 * 1024;
@@ -30,7 +30,15 @@ pub enum Msg {
     },
     HelloOk { desktop_name: String },
     Text { id: u64, text: String },
-    Key { id: u64, key: String, #[serde(default = "one")] count: u32 },
+    Key {
+        id: u64,
+        key: String,
+        /// v4: modifiers held while the key is tapped (`super`, `ctrl`, `alt`, `shift`).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        mods: Vec<String>,
+        #[serde(default = "one")]
+        count: u32,
+    },
     Ack { id: u64 },
     Error {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -58,6 +66,9 @@ pub enum Msg {
         word_fixes: std::collections::BTreeMap<String, String>,
         pointer_speed: f64,
         pointer_accel: f64,
+        /// v4. Absent from older desktops, which can't press key combos.
+        #[serde(default)]
+        shortcuts: Vec<Shortcut>,
     },
     SettingsSet {
         id: u64,
@@ -67,7 +78,32 @@ pub enum Msg {
         pointer_speed: Option<f64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pointer_accel: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        shortcuts: Option<Vec<Shortcut>>,
     },
+}
+
+/// v4: a named key combo the phone shows as a button, e.g. Terminal = Super+Enter.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct Shortcut {
+    pub name: String,
+    pub key: String,
+    #[serde(default)]
+    pub mods: Vec<String>,
+}
+
+impl Shortcut {
+    /// Written like `super+enter` or `ctrl+shift+t`.
+    pub fn combo(&self) -> String {
+        self.mods.iter().chain([&self.key]).cloned().collect::<Vec<_>>().join("+")
+    }
+
+    /// Splits `ctrl+shift+t` into the key and its modifiers. Names are not checked here.
+    pub fn parse_combo(combo: &str) -> (String, Vec<String>) {
+        let mut parts: Vec<String> = combo.split('+').map(|p| p.trim().to_lowercase()).collect();
+        let key = parts.pop().unwrap_or_default();
+        (key, parts)
+    }
 }
 
 /// The `caw://pair?...` link shown as a QR code.
@@ -122,16 +158,32 @@ mod tests {
         let m = Msg::Text { id: 1, text: "Hello world. ".into() };
         assert_eq!(serde_json::to_string(&m).unwrap(), r#"{"type":"text","id":1,"text":"Hello world. "}"#);
         let k: Msg = serde_json::from_str(r#"{"type":"key","id":2,"key":"backspace"}"#).unwrap();
-        assert_eq!(k, Msg::Key { id: 2, key: "backspace".into(), count: 1 });
+        assert_eq!(k, Msg::Key { id: 2, key: "backspace".into(), mods: vec![], count: 1 });
+        let combo = Msg::Key { id: 9, key: "enter".into(), mods: vec!["super".into()], count: 1 };
+        assert_eq!(serde_json::to_string(&combo).unwrap(), r#"{"type":"key","id":9,"key":"enter","mods":["super"],"count":1}"#);
+        // Without modifiers the message is exactly what a v3 phone sends.
+        let bare = Msg::Key { id: 3, key: "enter".into(), mods: vec![], count: 1 };
+        assert_eq!(serde_json::to_string(&bare).unwrap(), r#"{"type":"key","id":3,"key":"enter","count":1}"#);
         assert_eq!(serde_json::to_string(&Msg::Ping).unwrap(), r#"{"type":"ping"}"#);
         let c: Msg = serde_json::from_str(r#"{"type":"click","button":"right"}"#).unwrap();
         assert_eq!(c, Msg::Click { id: None, button: "right".into(), action: "click".into() });
         let m: Msg = serde_json::from_str(r#"{"type":"pointer_move","dx":3,"dy":-1.5}"#).unwrap();
         assert_eq!(m, Msg::PointerMove { dx: 3.0, dy: -1.5 });
         let set: Msg = serde_json::from_str(r#"{"type":"settings_set","id":5,"pointer_speed":2.0}"#).unwrap();
-        assert_eq!(set, Msg::SettingsSet { id: 5, word_fixes: None, pointer_speed: Some(2.0), pointer_accel: None });
+        assert_eq!(set, Msg::SettingsSet { id: 5, word_fixes: None, pointer_speed: Some(2.0), pointer_accel: None, shortcuts: None });
+        let set: Msg = serde_json::from_str(r#"{"type":"settings_set","id":6,"shortcuts":[{"name":"Terminal","key":"enter","mods":["super"]}]}"#).unwrap();
+        let terminal = Shortcut { name: "Terminal".into(), key: "enter".into(), mods: vec!["super".into()] };
+        assert_eq!(set, Msg::SettingsSet { id: 6, word_fixes: None, pointer_speed: None, pointer_accel: None, shortcuts: Some(vec![terminal]) });
         let e = Msg::Error { id: None, reason: "x".into() };
         assert_eq!(serde_json::to_string(&e).unwrap(), r#"{"type":"error","reason":"x"}"#);
+    }
+
+    #[test]
+    fn combos() {
+        assert_eq!(Shortcut::parse_combo("Ctrl+Shift+T"), ("t".into(), vec!["ctrl".into(), "shift".into()]));
+        assert_eq!(Shortcut::parse_combo("enter"), ("enter".into(), vec![]));
+        let s = Shortcut { name: "Terminal".into(), key: "enter".into(), mods: vec!["super".into()] };
+        assert_eq!(s.combo(), "super+enter");
     }
 
     #[test]

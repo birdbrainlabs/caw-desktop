@@ -7,13 +7,14 @@ mod linux;
 mod pointer;
 mod sendinput;
 mod settings;
+mod shortcuts;
 mod typer;
 
 use anyhow::{bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use caw_desktop::identity::{fingerprint, hex, short_id, Identity};
 use caw_desktop::pairing::{self, LABEL_DESKTOP, LABEL_PHONE};
-use caw_desktop::proto::{Msg, PairUri, DEFAULT_PORT, MAX_LINE, SERVICE_TYPE, VERSION};
+use caw_desktop::proto::{Msg, PairUri, Shortcut, DEFAULT_PORT, MAX_LINE, SERVICE_TYPE, VERSION};
 use caw_desktop::tlsconf;
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -99,8 +100,12 @@ impl State {
         self.config_dir.join("word-fixes.json")
     }
 
+    fn shortcuts_path(&self) -> PathBuf {
+        self.config_dir.join("shortcuts.json")
+    }
+
     /// Validates everything first, then saves; nothing changes if any value is bad.
-    fn update_settings(&self, word_fixes: Option<fixes::Fixes>, speed: Option<f64>, accel: Option<f64>) -> Result<()> {
+    fn update_settings(&self, word_fixes: Option<fixes::Fixes>, speed: Option<f64>, accel: Option<f64>, shortcuts: Option<Vec<Shortcut>>) -> Result<()> {
         let mut next = *self.settings.lock().unwrap();
         if let Some(v) = speed {
             settings::check_range("pointer_speed", v, settings::SPEED_RANGE)?;
@@ -114,8 +119,12 @@ impl State {
         if let Some(f) = &word_fixes {
             settings::check_fixes(f)?;
         }
+        let shortcuts = shortcuts.map(shortcuts::check).transpose()?;
         if let Some(f) = &word_fixes {
             fixes::save(&self.fixes_path(), f)?;
+        }
+        if let Some(list) = &shortcuts {
+            shortcuts::save(&self.shortcuts_path(), list)?;
         }
         next.save(&self.config_dir.join("settings.json"))?;
         *self.settings.lock().unwrap() = next;
@@ -345,11 +354,47 @@ async fn main() -> Result<()> {
             }
             Ok(())
         }
+        Some("shortcuts") => {
+            let path = config_dir()?.join("shortcuts.json");
+            let mut list = shortcuts::load(&path);
+            match (args.get(1).map(String::as_str), args.get(2), args.get(3)) {
+                (Some("add"), Some(name), Some(combo)) => {
+                    let (key, mods) = Shortcut::parse_combo(combo);
+                    list.push(Shortcut { name: name.clone(), key, mods });
+                    let list = shortcuts::check(list)?;
+                    std::fs::create_dir_all(config_dir()?)?;
+                    shortcuts::save(&path, &list)?;
+                    let added = list.last().context("empty list")?;
+                    println!("Added: \"{}\" = {}", added.name, added.combo());
+                }
+                (Some("remove"), Some(name), None) => {
+                    let before = list.len();
+                    list.retain(|s| s.name.to_lowercase() != name.trim().to_lowercase());
+                    if list.len() == before {
+                        bail!("no shortcut named {name:?}");
+                    }
+                    shortcuts::save(&path, &list)?;
+                    println!("Removed \"{}\"", name.trim());
+                }
+                (None, ..) => {
+                    if list.is_empty() {
+                        println!("No shortcuts. Add one: caw-desktop shortcuts add Terminal super+enter");
+                    }
+                    for s in &list {
+                        println!("  \"{}\" = {}", s.name, s.combo());
+                    }
+                    println!("File: {}", path.display());
+                }
+                _ => bail!("usage: caw-desktop shortcuts [add <name> <combo> | remove <name>]"),
+            }
+            Ok(())
+        }
         Some("settings") => {
             let s = settings::Settings::load(&config_dir()?.join("settings.json"));
             println!("pointer speed: {}  (phone can change this)", s.pointer_speed);
             println!("pointer acceleration: {}", s.pointer_accel);
             println!("word fixes: caw-desktop fixes");
+            println!("shortcuts: caw-desktop shortcuts");
             Ok(())
         }
         Some("unpair") => {
@@ -374,6 +419,9 @@ async fn main() -> Result<()> {
             println!("caw-desktop fixes                     list word fixes");
             println!("caw-desktop fixes \"heard\" \"fixed\"     add a word fix");
             println!("caw-desktop fixes \"heard\"             remove a word fix");
+            println!("caw-desktop shortcuts                          list shortcut buttons for the phone");
+            println!("caw-desktop shortcuts add \"name\" super+enter   add one (keys: see PROTOCOL.md)");
+            println!("caw-desktop shortcuts remove \"name\"            remove one");
             Ok(())
         }
     }
@@ -624,11 +672,12 @@ async fn handle(state: Arc<State>, acceptor: TlsAcceptor, tcp: TcpStream, addr: 
                     word_fixes: fixes::load(&state.fixes_path()),
                     pointer_speed: s.pointer_speed,
                     pointer_accel: s.pointer_accel,
+                    shortcuts: shortcuts::load(&state.shortcuts_path()),
                 })
                 .await?;
             }
-            Msg::SettingsSet { id, word_fixes, pointer_speed, pointer_accel } => {
-                let reply = match state.update_settings(word_fixes, pointer_speed, pointer_accel) {
+            Msg::SettingsSet { id, word_fixes, pointer_speed, pointer_accel, shortcuts } => {
+                let reply = match state.update_settings(word_fixes, pointer_speed, pointer_accel, shortcuts) {
                     Ok(()) => {
                         log(format!("{addr}: settings updated from the phone"));
                         Msg::Ack { id }
@@ -649,13 +698,19 @@ async fn handle(state: Arc<State>, acceptor: TlsAcceptor, tcp: TcpStream, addr: 
                 }
                 send(&mut io, ack_or_error(id, result)).await?;
             }
-            Msg::Key { id, key, count } => {
+            Msg::Key { id, key, mods, count } => {
+                let original = Msg::Key { id, key: key.clone(), mods: mods.clone(), count };
+                let Ok((key, mods)) = typer::parse_combo(&key, &mods) else {
+                    state.forget(&peer_fp, &session, &original);
+                    send(&mut io, Msg::Error { id: Some(id), reason: "unknown_key".into() }).await?;
+                    continue;
+                };
                 let result = {
                     let _turn = state.typing.lock().await;
-                    typer::press_key(&key, count).await
+                    typer::press_key(key, &mods, count).await
                 };
                 if result.is_err() {
-                    state.forget(&peer_fp, &session, &Msg::Key { id, key, count });
+                    state.forget(&peer_fp, &session, &original);
                 }
                 send(&mut io, ack_or_error(id, result)).await?;
             }
@@ -707,8 +762,11 @@ mod tests {
     #[test]
     fn restarted_app_is_not_a_resend() {
         let fp = [7u8; 32];
-        let enter = Msg::Key { id: 1, key: "enter".into(), count: 1 };
+        let enter = Msg::Key { id: 1, key: "enter".into(), mods: vec![], count: 1 };
         assert_eq!(dedup_key(&fp, "a", &enter), dedup_key(&fp, "a", &enter));
         assert_ne!(dedup_key(&fp, "a", &enter), dedup_key(&fp, "b", &enter));
+        // Super+Enter with the same id is a different message, not a resend of Enter.
+        let super_enter = Msg::Key { id: 1, key: "enter".into(), mods: vec!["super".into()], count: 1 };
+        assert_ne!(dedup_key(&fp, "a", &enter), dedup_key(&fp, "a", &super_enter));
     }
 }

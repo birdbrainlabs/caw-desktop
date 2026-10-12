@@ -102,11 +102,22 @@ caw-desktop unpair ID  # forget a phone
 caw-desktop fixes      # list word fixes
 caw-desktop fixes "car app" "Caw app"   # add a word fix
 caw-desktop settings   # show mouse speed settings
+caw-desktop shortcuts  # list shortcut buttons for the phone
+caw-desktop shortcuts add Terminal super+enter   # add a shortcut
+caw-desktop shortcuts remove Terminal            # remove it
 ```
 
 **Word fixes** correct phrases the speech model often mishears before they are
 typed. They match whole phrases only, so adding `"car app" → "Caw app"` leaves
 the word "car" alone everywhere else. The phone app can also edit them.
+
+**Shortcuts** are buttons on the phone that press a key combo on the computer,
+such as `super+enter` (Super is the Windows key) or `ctrl+shift+t`. Keys are
+named as in [PROTOCOL.md](PROTOCOL.md#v4-shortcuts): letters, digits, `f1`–`f12`,
+`enter`, `space`, `tab`, `escape`, arrows, `page_up`, `minus` and so on. Caw just
+presses the keys; what they do is up to your desktop. There are none until you
+add some, here or in the phone app's settings; the phone picks up changes made
+here the next time it connects.
 
 ## Security
 
@@ -134,11 +145,13 @@ phone and as a reference for phone implementations:
 caw-fake-phone pair 'caw://pair?h=<ip>&p=47820&c=<code>&n=x'
 caw-fake-phone send 'Hello world. '
 caw-fake-phone key backspace 3
+caw-fake-phone combo ctrl+shift+t
 caw-fake-phone move 200 100
 caw-fake-phone click left
 caw-fake-phone scroll 30
 caw-fake-phone settings
 caw-fake-phone set-speed 2
+caw-fake-phone set-shortcuts '[{"name":"Terminal","key":"enter","mods":["super"]}]'
 ```
 
 Run the receiver with `CAW_DRY_RUN=1` to log what it would type instead of

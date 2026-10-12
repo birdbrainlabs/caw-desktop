@@ -5,7 +5,7 @@
 #![cfg_attr(not(windows), allow(dead_code))]
 
 use crate::pointer::Button;
-use crate::typer::Key;
+use crate::typer::{Key, Mod};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Ev {
@@ -31,6 +31,26 @@ const VK_UP: u16 = 0x26;
 const VK_RIGHT: u16 = 0x27;
 const VK_DOWN: u16 = 0x28;
 const VK_DELETE: u16 = 0x2E;
+const VK_SHIFT: u16 = 0x10;
+const VK_CONTROL: u16 = 0x11;
+const VK_MENU: u16 = 0x12;
+const VK_PRIOR: u16 = 0x21;
+const VK_NEXT: u16 = 0x22;
+const VK_SPACE: u16 = 0x20;
+const VK_INSERT: u16 = 0x2D;
+const VK_LWIN: u16 = 0x5B;
+const VK_F1: u16 = 0x70;
+const VK_OEM_1: u16 = 0xBA;
+const VK_OEM_PLUS: u16 = 0xBB;
+const VK_OEM_COMMA: u16 = 0xBC;
+const VK_OEM_MINUS: u16 = 0xBD;
+const VK_OEM_PERIOD: u16 = 0xBE;
+const VK_OEM_2: u16 = 0xBF;
+const VK_OEM_3: u16 = 0xC0;
+const VK_OEM_4: u16 = 0xDB;
+const VK_OEM_5: u16 = 0xDC;
+const VK_OEM_6: u16 = 0xDD;
+const VK_OEM_7: u16 = 0xDE;
 
 /// The virtual key, and whether it is an "extended" key (the navigation
 /// cluster), which Windows otherwise reads as the number pad.
@@ -47,6 +67,36 @@ fn vk(key: Key) -> (u16, bool) {
         Key::Down => (VK_DOWN, true),
         Key::Home => (VK_HOME, true),
         Key::End => (VK_END, true),
+        Key::Space => (VK_SPACE, false),
+        Key::PageUp => (VK_PRIOR, true),
+        Key::PageDown => (VK_NEXT, true),
+        Key::Insert => (VK_INSERT, true),
+        Key::F(n) => (VK_F1 + u16::from(n) - 1, false),
+        // Letters and digits are their uppercase ASCII codes; punctuation keys
+        // are named after their place on a US keyboard.
+        Key::Char(c) => match c {
+            ';' => (VK_OEM_1, false),
+            '=' => (VK_OEM_PLUS, false),
+            ',' => (VK_OEM_COMMA, false),
+            '-' => (VK_OEM_MINUS, false),
+            '.' => (VK_OEM_PERIOD, false),
+            '/' => (VK_OEM_2, false),
+            '`' => (VK_OEM_3, false),
+            '[' => (VK_OEM_4, false),
+            '\\' => (VK_OEM_5, false),
+            ']' => (VK_OEM_6, false),
+            '\'' => (VK_OEM_7, false),
+            c => (c.to_ascii_uppercase() as u16, false),
+        },
+    }
+}
+
+fn vk_mod(m: Mod) -> (u16, bool) {
+    match m {
+        Mod::Super => (VK_LWIN, true),
+        Mod::Ctrl => (VK_CONTROL, false),
+        Mod::Alt => (VK_MENU, false),
+        Mod::Shift => (VK_SHIFT, false),
     }
 }
 
@@ -57,6 +107,17 @@ fn tap(vk: u16, extended: bool) -> [Ev; 2] {
 pub fn key_events(key: Key, count: u32) -> Vec<Ev> {
     let (vk, extended) = vk(key);
     (0..count).flat_map(|_| tap(vk, extended)).collect()
+}
+
+/// Holds `mods` (in pressing order), taps the key `count` times, then
+/// releases the modifiers in reverse order.
+pub fn combo_events(key: Key, mods: &[Mod], count: u32) -> Vec<Ev> {
+    let press = mods.iter().map(|&m| vk_mod(m)).map(|(vk, extended)| Ev::Key { vk, extended, up: false });
+    press.chain(key_events(key, count)).chain(release_events(mods)).collect()
+}
+
+pub fn release_events(mods: &[Mod]) -> Vec<Ev> {
+    mods.iter().rev().map(|&m| vk_mod(m)).map(|(vk, extended)| Ev::Key { vk, extended, up: true }).collect()
 }
 
 /// Newlines and tabs become real Enter and Tab presses (apps ignore them as
@@ -162,6 +223,20 @@ mod tests {
         assert_eq!(ev.len(), 6);
         assert_eq!(ev[0], Ev::Key { vk: VK_BACK, extended: false, up: false });
         assert_eq!(key_events(Key::Left, 1)[0], Ev::Key { vk: VK_LEFT, extended: true, up: false });
+    }
+
+    #[test]
+    fn combos_hold_and_release_modifiers() {
+        let k = |vk, extended, up| Ev::Key { vk, extended, up };
+        assert_eq!(
+            combo_events(Key::Char('t'), &[Mod::Ctrl, Mod::Shift], 1),
+            vec![k(VK_CONTROL, false, false), k(VK_SHIFT, false, false), k(0x54, false, false), k(0x54, false, true), k(VK_SHIFT, false, true), k(VK_CONTROL, false, true)]
+        );
+        assert_eq!(combo_events(Key::Enter, &[Mod::Super], 2).len(), 6);
+        assert_eq!(combo_events(Key::Enter, &[Mod::Super], 1)[0], k(VK_LWIN, true, false));
+        assert_eq!(vk(Key::Char('7')), (0x37, false));
+        assert_eq!(vk(Key::F(12)), (0x7B, false));
+        assert_eq!(vk(Key::Char('`')), (VK_OEM_3, false));
     }
 }
 

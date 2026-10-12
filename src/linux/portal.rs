@@ -49,6 +49,42 @@ impl Portal {
         Ok(())
     }
 
+    /// Holds the modifiers, taps `key` `count` times, then releases the
+    /// modifiers in reverse order, even if a tap failed. All are evdev
+    /// keycodes: desktops match shortcuts by key position, and a keysym
+    /// such as "T" would bring its own Shift.
+    pub async fn tap_combo(&self, mods: &[u32], key: u32, count: u32) -> Result<()> {
+        let mut held = Vec::new();
+        let mut result = Ok(());
+        for &m in mods {
+            result = self.keycode(m, KeyState::Pressed).await;
+            if result.is_err() {
+                break;
+            }
+            held.push(m);
+        }
+        for _ in 0..count {
+            if result.is_err() {
+                break;
+            }
+            result = match self.keycode(key, KeyState::Pressed).await {
+                Ok(()) => self.keycode(key, KeyState::Released).await,
+                e => e,
+            };
+        }
+        for &m in held.iter().rev() {
+            let released = self.keycode(m, KeyState::Released).await;
+            result = result.and(released);
+        }
+        result
+    }
+
+    async fn keycode(&self, code: u32, state: KeyState) -> Result<()> {
+        self.proxy.notify_keyboard_keycode(&self.session, code as i32, state, Default::default()).await?;
+        tokio::time::sleep(KEY_GAP).await;
+        Ok(())
+    }
+
     pub async fn motion(&self, dx: f64, dy: f64) -> Result<()> {
         Ok(self.proxy.notify_pointer_motion(&self.session, dx, dy, Default::default()).await?)
     }
