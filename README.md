@@ -42,20 +42,34 @@ Caw can't type into those unless Caw Desktop is also run as administrator.
 
 ## Install (Linux)
 
-Caw Desktop picks the right way to type and move the mouse on your desktop:
+### Ubuntu, Debian and Linux Mint
 
-- **GNOME and KDE Plasma (Wayland):** the first time it starts, the desktop
-  asks whether Caw Desktop may control your keyboard and mouse. Allow it; the
-  answer is remembered.
-- **X11 desktops** (Linux Mint Cinnamon, XFCE, MATE): nothing to set up.
-- **Hyprland and Sway:** install `wtype`.
+1. Download [caw-desktop-linux-x86_64.deb](https://github.com/birdbrainlabs/caw-desktop/releases/latest/download/caw-desktop-linux-x86_64.deb)
+   from the [latest release](https://github.com/birdbrainlabs/caw-desktop/releases/latest).
+2. Double-click it. It opens in the Software app; click **Install**.
+   (Or in a terminal: `sudo apt install ~/Downloads/caw-desktop-linux-x86_64.deb`.)
+3. Open **Caw Desktop** from the apps menu. It shows a QR code in your web
+   browser: in Caw, tap **Send to computer → Pair** and scan it.
 
-Characters your keyboard layout doesn't have (like "é" on a US layout) are
-typed on X11, Hyprland and Sway, but may be skipped on GNOME and KDE.
+Caw Desktop now starts by itself whenever you log in. To pair another phone,
+open **Caw Desktop** from the apps menu again. To uninstall, remove it in the
+Software app or with `sudo apt remove caw-desktop`.
 
-Either download
-[caw-desktop-linux-x86_64.tar.gz](https://github.com/birdbrainlabs/caw-desktop/releases/latest/download/caw-desktop-linux-x86_64.tar.gz)
-from the [latest release](https://github.com/birdbrainlabs/caw-desktop/releases/latest)
+### Other distributions
+
+One command, no sudo:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/birdbrainlabs/caw-desktop/master/install.sh | sh
+```
+
+It puts `caw-desktop` in `~/.local/bin`, starts it now and at every login
+with a systemd user service, and shows the QR code to scan. Run it again to
+upgrade.
+
+### By hand
+
+Download [caw-desktop-linux-x86_64.tar.gz](https://github.com/birdbrainlabs/caw-desktop/releases/latest/download/caw-desktop-linux-x86_64.tar.gz)
 and put `caw-desktop` in `~/.local/bin/`, or build it with Rust (`cargo`):
 
 ```sh
@@ -65,8 +79,9 @@ cargo build --release
 install -m755 target/release/caw-desktop ~/.local/bin/
 ```
 
-Start it automatically when you log in, with a systemd user service at
-`~/.config/systemd/user/caw-desktop.service`:
+Then start it at login with a systemd user service in
+`~/.config/systemd/user/caw-desktop.service`, enable it with
+`systemctl --user enable --now caw-desktop`, and run `caw-desktop pair`:
 
 ```ini
 [Unit]
@@ -82,9 +97,18 @@ Restart=on-failure
 WantedBy=graphical-session.target
 ```
 
-```sh
-systemctl --user enable --now caw-desktop
-```
+### Your desktop
+
+Caw Desktop picks the right way to type and move the mouse on your desktop:
+
+- **GNOME and KDE Plasma (Wayland):** the first time it starts, the desktop
+  asks whether Caw Desktop may control your keyboard and mouse. Allow it; the
+  answer is remembered.
+- **X11 desktops** (Linux Mint Cinnamon, XFCE, MATE): nothing to set up.
+- **Hyprland and Sway:** install `wtype`.
+
+Characters your keyboard layout doesn't have (like "é" on a US layout) are
+typed on X11, Hyprland and Sway, but may be skipped on GNOME and KDE.
 
 If you use a firewall, allow the phone in:
 
@@ -97,6 +121,7 @@ sudo ufw allow 5353/udp    # finding the computer on the network (mDNS)
 
 ```sh
 caw-desktop pair       # show a QR code and pairing code for the phone
+caw-desktop pair --window   # the same, in the web browser (the apps menu entry)
 caw-desktop devices    # list paired phones
 caw-desktop unpair ID  # forget a phone
 caw-desktop fixes      # list word fixes
@@ -124,6 +149,9 @@ here the next time it connects.
 - Pairing uses a one-time 16-character code (shown as a QR code) that expires
   after 2 minutes. The code is bound to both devices' certificates, so another
   device on the same network can't pair or intercept the connection without it.
+- The pairing page the apps menu opens is a local file only you can read. It
+  loads nothing from the internet, and the code is removed from it once
+  pairing ends.
 - After pairing, both sides pin each other's certificate (mutual TLS 1.3).
   Unpaired devices are disconnected before they can send anything.
 - Caw Desktop never sends your text anywhere; it only types what the phone sends.
@@ -155,7 +183,11 @@ caw-fake-phone set-shortcuts '[{"name":"Terminal","key":"enter","mods":["super"]
 ```
 
 Run the receiver with `CAW_DRY_RUN=1` to log what it would type instead of
-typing, and `CAW_PORT=<port>` to use another port.
+typing, and `CAW_PORT=<port>` to use another port. `CAW_NO_OPEN=1` makes
+`pair --window` write its page without opening the browser.
+
+`cargo deb` builds the .deb (the release uses `cargo zigbuild` first, see
+[the workflow](.github/workflows/build.yml)).
 
 ## License
 
