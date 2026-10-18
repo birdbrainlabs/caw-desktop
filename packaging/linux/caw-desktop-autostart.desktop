@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Caw Desktop
+Comment=Types what you dictate in the Caw phone app
+Exec=/usr/bin/caw-desktop serve
+TryExec=/usr/bin/caw-desktop
+Icon=input-keyboard
+Terminal=false
+X-GNOME-Autostart-enabled=true

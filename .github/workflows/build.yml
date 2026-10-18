@@ -13,31 +13,62 @@ permissions:
 jobs:
   linux:
     runs-on: ubuntu-24.04
+    env:
+      # Linked against glibc 2.31 with zig, so the release runs on Ubuntu 20.04,
+      # Debian 11 and newer, whatever runner image builds it.
+      TARGET: x86_64-unknown-linux-gnu
+      GLIBC: "2.31"
     steps:
       - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.1
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild,cargo-deb
       - name: Test
         run: cargo test --locked
       - name: Build
-        run: cargo build --release --locked
+        run: cargo zigbuild --release --locked --target "$TARGET.$GLIBC"
+      - name: Check the glibc it needs
+        run: |
+          need=$(objdump -T "target/$TARGET/release/caw-desktop" | grep -o 'GLIBC_[0-9.]*' | sed 's/GLIBC_//' | sort -uV | tail -1)
+          echo "needs glibc $need"
+          [ "$(printf '%s\n' "$need" "$GLIBC" | sort -V | tail -1)" = "$GLIBC" ]
       - name: End-to-end test
-        run: scripts/e2e.sh
+        run: scripts/e2e.sh "target/$TARGET/release"
       # Types into a real X11 window and moves the pointer, on a virtual screen.
       - name: Real keyboard and mouse test (X11)
         run: xvfb-run -a cargo test --release --locked -- --ignored --test-threads=1
       - name: Package
         run: |
           mkdir -p dist
-          cp target/release/caw-desktop target/release/caw-fake-phone README.md PROTOCOL.md LICENSE ART-LICENSE.md dist/
+          cp "target/$TARGET/release/caw-desktop" "target/$TARGET/release/caw-fake-phone" README.md PROTOCOL.md LICENSE ART-LICENSE.md dist/
           tar -czf caw-desktop-linux-x86_64.tar.gz -C dist .
+          cargo deb --no-build --locked --target "$TARGET" --output caw-desktop-linux-x86_64.deb
+      # Installs the .deb on the oldest and newest distros it's meant for, then removes it.
+      - name: Install test (.deb)
+        run: |
+          for image in ubuntu:20.04 debian:12 ubuntu:24.04; do
+            docker run --rm -v "$PWD:/w:ro" "$image" sh -ec '
+              apt-get update -qq && apt-get install -y -qq --no-install-recommends /w/caw-desktop-linux-x86_64.deb >/dev/null
+              caw-desktop --version
+              test -f /etc/xdg/autostart/caw-desktop.desktop && test -f /usr/share/applications/caw-desktop.desktop
+              apt-get purge -y -qq caw-desktop >/dev/null && ! test -e /usr/bin/caw-desktop'
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: caw-desktop-linux-x86_64
-          path: caw-desktop-linux-x86_64.tar.gz
+          path: |
+            caw-desktop-linux-x86_64.tar.gz
+            caw-desktop-linux-x86_64.deb
       - name: Attach to release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: caw-desktop-linux-x86_64.tar.gz
+          files: |
+            caw-desktop-linux-x86_64.tar.gz
+            caw-desktop-linux-x86_64.deb
 
   windows:
     runs-on: windows-latest

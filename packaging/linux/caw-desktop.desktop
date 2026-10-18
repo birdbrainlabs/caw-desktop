@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Caw Desktop
+GenericName=Phone keyboard and mouse
+Comment=Pair your phone
+Exec=/usr/bin/caw-desktop pair --window
+TryExec=/usr/bin/caw-desktop
+Icon=input-keyboard
+Terminal=false
+Categories=Utility;Accessibility;
+Keywords=Caw;dictation;phone;pair;keyboard;mouse;touchpad;
+StartupNotify=false

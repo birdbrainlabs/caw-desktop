@@ -53,3 +53,28 @@ wayland-protocols-misc = { version = "0.3", features = ["client"] }
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 libc = "0.2"
 xkbcommon-dl = "0.4"
+
+# The .deb for Ubuntu, Debian and Linux Mint (`cargo deb`, see .github/workflows/build.yml):
+# the receiver starts at login for every desktop user, and "Caw Desktop" in the
+# apps menu shows the pairing code. caw-fake-phone is a dev tool and stays out.
+[package.metadata.deb]
+maintainer = "birdbrain labs <bird@birdbrainlabs.dev>"
+copyright = "2026 birdbrain labs"
+section = "utils"
+priority = "optional"
+# The release build targets glibc 2.31 (Ubuntu 20.04, Debian 11).
+depends = "libc6 (>= 2.31)"
+recommends = "xdg-utils"
+suggests = "wtype"
+extended-description = """\
+You dictate into the Caw phone app; Caw Desktop types the text into whatever \
+window is focused. The phone can also move the mouse, click, scroll and press \
+keys and shortcuts. Speech recognition runs on the phone, and the phone and \
+computer talk only over the local network."""
+maintainer-scripts = "packaging/debian/"
+assets = [
+    ["target/release/caw-desktop", "usr/bin/", "755"],
+    ["packaging/linux/caw-desktop.desktop", "usr/share/applications/", "644"],
+    ["packaging/linux/caw-desktop-autostart.desktop", "etc/xdg/autostart/caw-desktop.desktop", "644"],
+    ["README.md", "usr/share/doc/caw-desktop/", "644"],
+]
