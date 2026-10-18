@@ -14,6 +14,8 @@ use anyhow::{bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use caw_desktop::identity::{fingerprint, hex, short_id, Identity};
 use caw_desktop::pairing::{self, LABEL_DESKTOP, LABEL_PHONE};
+#[cfg(target_os = "linux")]
+use caw_desktop::pairpage;
 use caw_desktop::proto::{Msg, PairUri, Shortcut, DEFAULT_PORT, MAX_LINE, SERVICE_TYPE, VERSION};
 use caw_desktop::tlsconf;
 use futures::{SinkExt, StreamExt};
@@ -238,6 +240,8 @@ mod control {
         dirs::runtime_dir().unwrap_or_else(std::env::temp_dir).join("caw-desktop.sock")
     }
 
+    pub type Stream = UnixStream;
+
     pub async fn connect() -> Result<UnixStream> {
         UnixStream::connect(path()).await
     }
@@ -316,7 +320,12 @@ async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         None | Some("serve") => serve(false).await,
+        Some("pair") if args.get(1).is_some_and(|a| a == "--window") => pair_window().await,
         Some("pair") => pair().await,
+        Some("--version" | "version") => {
+            println!("caw-desktop {}", env!("CARGO_PKG_VERSION"));
+            Ok(())
+        }
         Some("devices") => {
             let devices = load_devices(&config_dir()?.join("devices.json"));
             if devices.is_empty() {
@@ -413,6 +422,7 @@ async fn main() -> Result<()> {
         _ => {
             println!("caw-desktop            run the receiver (same as `serve`)");
             println!("caw-desktop pair       show a pairing code and QR code for the phone");
+            println!("caw-desktop pair --window  the same, as a page in the web browser");
             println!("caw-desktop devices    list paired phones");
             println!("caw-desktop unpair ID  forget a phone");
             println!("caw-desktop settings  show mouse settings");
@@ -431,18 +441,146 @@ async fn main() -> Result<()> {
 async fn pair() -> Result<()> {
     match control::connect().await {
         Ok(stream) => {
-            let (read, mut write) = tokio::io::split(stream);
-            write.write_all(b"pair\n").await?;
-            let mut lines = BufReader::new(read).lines();
-            let first = lines.next_line().await?.context("receiver closed the connection")?;
-            let (code, uri): (String, String) = serde_json::from_str(&first)?;
-            show_pairing(&code, &uri);
-            let outcome = lines.next_line().await?.unwrap_or_else(|| "receiver stopped".into());
+            let outcome = ask_to_pair(stream, |code, uri| {
+                show_pairing(code, uri);
+                Ok(())
+            })
+            .await?;
             println!("{}", outcome_text(&outcome));
             Ok(())
         }
         Err(_) => serve(true).await,
     }
+}
+
+/// Asks the running receiver for a pairing code, shows it, and waits for the outcome.
+async fn ask_to_pair<S>(stream: S, show: impl FnOnce(&str, &str) -> Result<()>) -> Result<String>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite,
+{
+    let (read, mut write) = tokio::io::split(stream);
+    write.write_all(b"pair\n").await?;
+    let mut lines = BufReader::new(read).lines();
+    let first = lines.next_line().await?.context("receiver closed the connection")?;
+    let (code, uri): (String, String) = serde_json::from_str(&first)?;
+    show(&code, &uri)?;
+    Ok(lines.next_line().await?.unwrap_or_else(|| "receiver stopped".into()))
+}
+
+#[cfg(not(target_os = "linux"))]
+async fn pair_window() -> Result<()> {
+    bail!("`pair --window` is only for Linux; use `caw-desktop pair`")
+}
+
+/// `pair --window`, for the apps menu: starts the receiver if it isn't running,
+/// then shows the pairing code as a page in the web browser instead of a terminal.
+/// The page is private to this user (mode 0600 in the runtime folder) and is
+/// rewritten without the code once pairing ends. `CAW_NO_OPEN=1` skips the browser.
+#[cfg(target_os = "linux")]
+async fn pair_window() -> Result<()> {
+    let page = pair_page_path()?;
+    let stream = match connect_or_start().await {
+        Ok(s) => s,
+        Err(e) => {
+            show_page(&page, &pairpage::error(&format!("{e:#}")))?;
+            return Err(e);
+        }
+    };
+    let outcome = ask_to_pair(stream, |code, uri| {
+        let expires_ms = now() * 1000 + PAIR_WINDOW.as_millis() as u64;
+        show_page(&page, &pairpage::pairing(code, uri, expires_ms))
+    })
+    .await?;
+    write_page(&page, &pairpage::outcome(&outcome))?;
+    println!("{}", outcome_text(&outcome));
+    Ok(())
+}
+
+/// Connects to the running receiver, first starting one in the background if needed.
+#[cfg(target_os = "linux")]
+async fn connect_or_start() -> Result<control::Stream> {
+    use std::io::IsTerminal;
+    use std::os::unix::process::CommandExt;
+    use std::process::{Command, Stdio};
+    if let Ok(stream) = control::connect().await {
+        return Ok(stream);
+    }
+    let mut cmd = Command::new(std::env::current_exe()?);
+    cmd.arg("serve").stdin(Stdio::null()).stdout(Stdio::null());
+    if std::io::stderr().is_terminal() {
+        cmd.stderr(Stdio::null());
+    }
+    // Its own process group, so it keeps running after this process and any terminal are gone.
+    let mut child = cmd.process_group(0).spawn().context("starting the receiver")?;
+    // The first start on GNOME and KDE waits until the user allows keyboard and mouse control.
+    let deadline = Instant::now() + Duration::from_secs(180);
+    loop {
+        if let Ok(stream) = control::connect().await {
+            return Ok(stream);
+        }
+        if let Some(status) = child.try_wait()? {
+            // It exits at once, successfully, if another receiver started meanwhile.
+            return control::connect().await.with_context(|| format!("the receiver stopped ({status})"));
+        }
+        if Instant::now() > deadline {
+            bail!("the receiver didn't start within 3 minutes");
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
+/// Where the pairing page goes: the private runtime folder, or the browser's own
+/// folder in it when the browser is a snap (as Firefox and Chromium are on Ubuntu),
+/// since snaps can't read the rest of it.
+#[cfg(target_os = "linux")]
+fn pair_page_path() -> Result<PathBuf> {
+    use std::os::unix::fs::DirBuilderExt;
+    let runtime = dirs::runtime_dir().context("XDG_RUNTIME_DIR is not set")?;
+    let handler = std::process::Command::new("xdg-mime")
+        .args(["query", "default", "text/html"])
+        .stderr(std::process::Stdio::null())
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    // Snaps' menu entries are named `<snap>_<app>.desktop`.
+    let snap = handler.split_once('_').map(|(name, _)| name).filter(|name| {
+        !name.is_empty() && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-') && Path::new("/snap").join(name).is_dir()
+    });
+    let dir = match snap {
+        Some(name) => runtime.join(format!("snap.{name}")),
+        None => runtime,
+    };
+    std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir)?;
+    Ok(dir.join(format!("caw-desktop-pair-{}.html", std::process::id())))
+}
+
+/// Writes the page readable only by this user, replacing any earlier one.
+#[cfg(target_os = "linux")]
+fn write_page(path: &Path, html: &str) -> Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let _ = std::fs::remove_file(path);
+    // create_new also refuses to follow a symlink left at this path.
+    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(path).with_context(|| format!("writing {}", path.display()))?;
+    file.write_all(html.as_bytes())?;
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn show_page(path: &Path, html: &str) -> Result<()> {
+    write_page(path, html)?;
+    println!("Pairing page: {}", path.display());
+    if std::env::var_os("CAW_NO_OPEN").is_some() {
+        return Ok(());
+    }
+    let mut opener = std::process::Command::new("xdg-open")
+        .arg(path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .context("opening the web browser (is xdg-open installed?)")?;
+    std::thread::spawn(move || opener.wait());
+    Ok(())
 }
 
 fn outcome_text(outcome: &str) -> String {
@@ -473,6 +611,12 @@ fn show_pairing(code: &str, uri: &str) {
 }
 
 async fn serve(start_pairing: bool) -> Result<()> {
+    // Started twice (say by both a login item and a systemd unit), the second one bows out
+    // instead of fighting over the port and asking again for keyboard and mouse control.
+    if control::connect().await.is_ok() {
+        log("already running");
+        return Ok(());
+    }
     let dir = config_dir()?;
     let identity = Identity::load_or_create(&dir, "caw-desktop")?;
     let name = gethostname::gethostname().to_string_lossy().into_owned();

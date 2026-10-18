@@ -3,5 +3,6 @@
 
 pub mod identity;
 pub mod pairing;
+pub mod pairpage;
 pub mod proto;
 pub mod tlsconf;
