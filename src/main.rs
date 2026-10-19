@@ -3,6 +3,7 @@
 
 mod cgevent;
 mod fixes;
+mod headless;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]
@@ -74,6 +75,9 @@ struct State {
     pointer: Option<pointer::Pointer>,
     recent: Mutex<std::collections::VecDeque<(u64, Instant)>>,
     settings: Mutex<settings::Settings>,
+    /// Bumped whenever a phone is paired or removed, so connections of a
+    /// removed phone close at once.
+    devices_changed: tokio::sync::watch::Sender<u64>,
 }
 
 impl State {
@@ -156,7 +160,39 @@ impl State {
         let mut devices = load_devices(&path);
         devices.retain(|d| d.fingerprint != fp_hex);
         devices.push(Device { id: short_id(fp), name: name.to_string(), fingerprint: fp_hex, paired_at: now() });
-        save_devices(&path, &devices)
+        save_devices(&path, &devices)?;
+        self.devices_updated();
+        Ok(())
+    }
+
+    /// Forgets a paired phone; false if no phone has that id.
+    fn remove_device(&self, id: &str) -> Result<bool> {
+        let path = self.devices_path();
+        let mut devices = load_devices(&path);
+        let before = devices.len();
+        devices.retain(|d| d.id != id);
+        if devices.len() == before {
+            return Ok(false);
+        }
+        save_devices(&path, &devices)?;
+        self.devices_updated();
+        Ok(true)
+    }
+
+    fn paired_phones(&self) -> Vec<headless::PairedPhone> {
+        load_devices(&self.devices_path()).into_iter().map(|d| headless::PairedPhone { id: d.id, name: d.name, paired_at: d.paired_at }).collect()
+    }
+
+    fn devices_updated(&self) {
+        self.devices_changed.send_modify(|n| *n = n.wrapping_add(1));
+        headless::emit(&headless::Event::Devices { devices: self.paired_phones() });
+    }
+
+    /// Closes the open pairing code, if any.
+    fn cancel_pairing(&self) {
+        if let Some(mut win) = self.pairing.lock().unwrap().take() {
+            win.finish("cancelled".into());
+        }
     }
 
     /// Opens a pairing window and returns (code, uri, receiver for the outcome).
@@ -204,22 +240,24 @@ impl State {
 /// Names of the phones connected right now, for the menu bar on a Mac.
 static CONNECTED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-/// A phone listed in CONNECTED while this lives.
-struct Connected(String);
+/// A phone listed in CONNECTED (and, headless, reported as connected) while this lives.
+struct Connected(headless::Phone);
 
 impl Connected {
-    fn new(name: String) -> Self {
+    fn new(id: String, name: String) -> Self {
         CONNECTED.lock().unwrap().push(name.clone());
-        Self(name)
+        headless::emit(&headless::Event::Connected { id: id.clone(), name: name.clone() });
+        Self(headless::Phone { id, name })
     }
 }
 
 impl Drop for Connected {
     fn drop(&mut self) {
         let mut list = CONNECTED.lock().unwrap();
-        if let Some(i) = list.iter().position(|n| *n == self.0) {
+        if let Some(i) = list.iter().position(|n| *n == self.0.name) {
             list.remove(i);
         }
+        headless::emit(&headless::Event::Disconnected { id: self.0.id.clone(), name: self.0.name.clone() });
     }
 }
 
@@ -348,6 +386,20 @@ fn log(msg: impl AsRef<str>) {
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let runtime = tokio::runtime::Runtime::new()?;
+    if args.first().is_some_and(|a| a == "serve") && args.get(1).is_some_and(|a| a == "--headless") {
+        headless::enable();
+        let code = match runtime.block_on(serve(false)) {
+            Ok(()) => 0,
+            Err(e) => {
+                log(format!("{e:#}"));
+                headless::emit(&headless::Event::Stopped { reason: "failed".into(), message: format!("{e:#}") });
+                1
+            }
+        };
+        // Don't wait for anything still running (a phone mid-connection, the mDNS thread).
+        runtime.shutdown_timeout(Duration::from_secs(1));
+        std::process::exit(code);
+    }
     // Caw Desktop.app opened from Finder or at login: the receiver with a menu bar icon.
     #[cfg(target_os = "macos")]
     if args.iter().all(|a| a.starts_with("-psn_")) && macapp::in_bundle() {
@@ -460,6 +512,7 @@ async fn cli(args: Vec<String>) -> Result<()> {
         }
         _ => {
             println!("caw-desktop            run the receiver (same as `serve`)");
+            println!("caw-desktop serve --headless  the receiver for another app: JSON lines on stdin/stdout");
             println!("caw-desktop pair       show a pairing code and QR code for the phone");
             println!("caw-desktop pair --window  the same, as a page in the web browser");
             println!("caw-desktop devices    list paired phones");
@@ -731,6 +784,13 @@ async fn serve(start_pairing: bool) -> Result<()> {
     // instead of fighting over the port and asking again for keyboard and mouse control.
     if control::connect().await.is_ok() {
         log("already running");
+        if headless::on() {
+            headless::emit(&headless::Event::Stopped {
+                reason: "already_running".into(),
+                message: "Caw Desktop is already running on this computer".into(),
+            });
+            std::process::exit(headless::EXIT_IN_USE);
+        }
         return Ok(());
     }
     let dir = config_dir()?;
@@ -743,8 +803,9 @@ async fn serve(start_pairing: bool) -> Result<()> {
     log(format!("typing and mouse through {}", linux::init(&dir).await.describe()));
     // macOS shows its dialog pointing to the Accessibility setting (once). Until the user
     // allows it, typing and the mouse report errors to the phone.
+    // Headless, the app that started this receiver explains the permission itself.
     #[cfg(target_os = "macos")]
-    if !typer::dry_run() && !cgevent::ask_for_access() {
+    if !typer::dry_run() && !headless::on() && !cgevent::ask_for_access() {
         log("not allowed to type or move the mouse yet: allow Caw Desktop in System Settings → Privacy & Security → Accessibility");
     }
     let state = Arc::new(State {
@@ -757,19 +818,57 @@ async fn serve(start_pairing: bool) -> Result<()> {
         pointer: pointer::Pointer::start().map_err(|e| log(format!("mouse control disabled: {e:#}"))).ok(),
         recent: Mutex::new(std::collections::VecDeque::new()),
         settings: Mutex::new(saved_settings),
+        devices_changed: tokio::sync::watch::channel(0).0,
     });
 
     if let Err(e) = fixes::ensure_file(&state.fixes_path()) {
         log(format!("word fixes disabled: {e:#}"));
     }
 
-    let listener = listen(port)?;
+    let listener = match listen(port) {
+        Ok(l) => l,
+        Err(e) if headless::on() && port_in_use(&e) => {
+            log(format!("{e:#}"));
+            headless::emit(&headless::Event::Stopped {
+                reason: "port_in_use".into(),
+                message: format!("another program is already using port {port}"),
+            });
+            std::process::exit(headless::EXIT_IN_USE);
+        }
+        Err(e) => return Err(e),
+    };
     let acceptor = TlsAcceptor::from(tlsconf::server_config(&identity)?);
     log(format!("listening on {}:{port} as {name:?} (id {})", local_ip(), short_id(&state.fp)));
+    headless::emit(&headless::Event::Listening {
+        port,
+        name: name.clone(),
+        id: short_id(&state.fp),
+        version: env!("CARGO_PKG_VERSION").into(),
+        accessibility: may_type(),
+    });
+    headless::emit(&headless::Event::Devices { devices: state.paired_phones() });
 
     // CAW_NO_MDNS=1 (for tests): the phone can only find the computer by the address in the QR code.
     let _mdns = if std::env::var_os("CAW_NO_MDNS").is_some() { None } else { advertise(&state).map_err(|e| log(format!("mDNS disabled: {e:#}"))).ok() };
-    tokio::spawn(control_loop(state.clone()));
+    // Headless, the app talks to this receiver over stdin, and nothing else is
+    // offered on the control socket: a standalone receiver started later then
+    // finds the port taken instead of handing its menu to this one.
+    let (stdin_tx, stdin_rx) = oneshot::channel();
+    if headless::on() {
+        tokio::spawn(headless_commands(state.clone(), stdin_tx));
+    } else {
+        drop(stdin_tx);
+        tokio::spawn(control_loop(state.clone()));
+    }
+    let headless = headless::on();
+    let stdin_closed = async move {
+        if headless {
+            let _ = stdin_rx.await;
+        } else {
+            std::future::pending::<()>().await;
+        }
+    };
+    tokio::pin!(stdin_closed);
 
     if start_pairing {
         let (code, uri, rx) = state.start_pairing();
@@ -784,7 +883,13 @@ async fn serve(start_pairing: bool) -> Result<()> {
     }
 
     loop {
-        let (tcp, mut addr) = listener.accept().await?;
+        let (tcp, mut addr) = tokio::select! {
+            accepted = listener.accept() => accepted?,
+            () = &mut stdin_closed => {
+                log("the app closed stdin; stopping");
+                return Ok(());
+            }
+        };
         addr.set_ip(addr.ip().to_canonical());
         let (state, acceptor) = (state.clone(), acceptor.clone());
         tokio::spawn(async move {
@@ -803,6 +908,66 @@ fn advertise(state: &State) -> Result<mdns_sd::ServiceDaemon> {
     let info = mdns_sd::ServiceInfo::new(SERVICE_TYPE, &state.name, &host, "", state.port, &props[..])?.enable_addr_auto();
     daemon.register(info)?;
     Ok(daemon)
+}
+
+/// True when listening failed because something else has the port.
+fn port_in_use(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| c.downcast_ref::<std::io::Error>().is_some_and(|io| io.kind() == std::io::ErrorKind::AddrInUse))
+}
+
+/// Whether this process may type and move the mouse (on a Mac: the
+/// Accessibility permission of the app that started it).
+fn may_type() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        cgevent::allowed()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        true
+    }
+}
+
+/// Headless: commands from the app, one JSON object per line on stdin. Tells
+/// `closed` when stdin ends.
+async fn headless_commands(state: Arc<State>, closed: oneshot::Sender<()>) {
+    let mut lines = BufReader::new(tokio::io::stdin()).lines();
+    while let Ok(Some(line)) = lines.next_line().await {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<headless::Command>(line) {
+            Ok(cmd) => headless_command(&state, cmd),
+            Err(e) => headless::emit(&headless::Event::Error { message: format!("unknown command: {e}") }),
+        }
+    }
+    let _ = closed.send(());
+}
+
+fn headless_command(state: &Arc<State>, cmd: headless::Command) {
+    use headless::{Command, Event};
+    match cmd {
+        Command::Pair => {
+            let (code, uri, rx) = state.start_pairing();
+            log("pairing code opened");
+            headless::emit(&Event::Pairing { display: pairing::display(&code), code: code.clone(), uri, expires_in: PAIR_WINDOW.as_secs() });
+            tokio::spawn(async move {
+                let outcome = match timeout(PAIR_WINDOW, rx).await {
+                    Ok(Ok(o)) => o,
+                    _ => "expired".into(),
+                };
+                headless::emit(&Event::PairEnded { code, result: headless::pair_result(&outcome).into(), message: outcome });
+            });
+        }
+        Command::CancelPair => state.cancel_pairing(),
+        Command::Remove { id } => match state.remove_device(&id) {
+            Ok(true) => log(format!("removed phone {id}")),
+            Ok(false) => headless::emit(&Event::Error { message: format!("no paired phone with id {id}") }),
+            Err(e) => headless::emit(&Event::Error { message: format!("removing the phone: {e:#}") }),
+        },
+        Command::Devices => headless::emit(&Event::Devices { devices: state.paired_phones() }),
+    }
 }
 
 /// Local control socket used by `caw-desktop pair` while the receiver runs.
@@ -846,9 +1011,20 @@ async fn handle(state: Arc<State>, acceptor: TlsAcceptor, tcp: TcpStream, addr: 
     let mut session = String::new();
     let mut warned_no_pointer = false;
     let mut _connected = None;
+    let mut devices_changed = state.devices_changed.subscribe();
 
     loop {
-        let line = match timeout(IDLE_TIMEOUT, io.next()).await {
+        let next = tokio::select! {
+            next = timeout(IDLE_TIMEOUT, io.next()) => next,
+            Ok(()) = devices_changed.changed(), if authed => {
+                if state.is_trusted(&peer_fp) {
+                    continue;
+                }
+                let _ = send(&mut io, Msg::Error { id: None, reason: "not_paired".into() }).await;
+                bail!("the phone was removed, disconnecting");
+            }
+        };
+        let line = match next {
             Err(_) => bail!("no messages for {}s, disconnecting", IDLE_TIMEOUT.as_secs()),
             Ok(None) => return Ok(()),
             // Phones often drop the socket without a TLS goodbye; that's a normal disconnect.
@@ -895,7 +1071,7 @@ async fn handle(state: Arc<State>, acceptor: TlsAcceptor, tcp: TcpStream, addr: 
                 }
                 authed = true;
                 session = s.unwrap_or_default();
-                _connected = Some(Connected::new(state.phone_name(&peer_fp)));
+                _connected = Some(Connected::new(short_id(&peer_fp), state.phone_name(&peer_fp)));
                 log(format!("{addr}: connected ({})", short_id(&peer_fp)));
                 send(&mut io, Msg::HelloOk { desktop_name: state.name.clone() }).await?;
             }

@@ -37,6 +37,8 @@ jobs:
           [ "$(printf '%s\n' "$need" "$GLIBC" | sort -V | tail -1)" = "$GLIBC" ]
       - name: End-to-end test
         run: scripts/e2e.sh "target/$TARGET/release"
+      - name: Headless mode test
+        run: scripts/headless-test.sh "target/$TARGET/release"
       # Types into a real X11 window and moves the pointer, on a virtual screen.
       # -noreset: Xvfb otherwise resets when the last client of one test disconnects,
       # and the next test's connection can land mid-reset.
@@ -85,6 +87,8 @@ jobs:
         run: cargo build --release --locked
       - name: End-to-end test
         run: scripts/e2e.sh
+      - name: Headless mode test (Caw for Mac's helper)
+        run: scripts/headless-test.sh
       # Moves the real mouse and types into a real text box on the runner's desktop.
       - name: Real keyboard and mouse test
         run: cargo test --release --locked -- --ignored --test-threads=1
@@ -120,3 +124,5 @@ jobs:
         run: cargo build --release --locked --bin caw-desktop --target x86_64-apple-darwin
       - name: End-to-end test
         run: scripts/e2e.sh
+      - name: Headless mode test (Caw for Mac's helper)
+        run: scripts/headless-test.sh

@@ -47,7 +47,10 @@ menu to stop that. The menu also shows which phone is connected. In shortcuts,
 **Super** is the **Command** key.
 
 [Caw for Mac](https://github.com/birdbrainlabs/caw), the dictation app you use
-by holding Fn, is a separate app. The two can run at the same time.
+by holding Fn, has this receiver built in: choose **Pair a phone…** in its menu.
+If you use Caw for Mac, you don't need Caw Desktop.app; quit it and remove it
+from Login Items. Only one of the two can receive at a time (they share port
+47820, and the phones paired with either).
 
 The commands under [Use](#use) work in Terminal too:
 `"/Applications/Caw Desktop.app/Contents/MacOS/caw-desktop" devices`, and so on.
@@ -217,6 +220,12 @@ typing, and `CAW_PORT=<port>` to use another port. `CAW_NO_OPEN=1` makes
 `pair --window` write its page without opening the browser, and `CAW_NO_MDNS=1`
 turns off announcing the computer on the network (the phone then finds it only
 by the address in the QR code).
+
+`caw-desktop serve --headless` is the receiver for another app to run (Caw
+for Mac bundles it): no menu bar icon, browser page or permission dialog. It
+reads commands from stdin and writes status to stdout, one JSON object per
+line (see [src/headless.rs](src/headless.rs)), and stops when stdin closes.
+`scripts/headless-test.sh` tests it.
 
 `cargo deb` builds the .deb (the release uses `cargo zigbuild` first, see
 [the workflow](.github/workflows/build.yml)). `scripts/release-mac.sh` builds,

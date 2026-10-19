@@ -245,6 +245,22 @@ async fn main() -> Result<()> {
             expect_ack(&mut io, id).await?;
             finish(&mut io).await
         }
-        _ => bail!("usage: caw-fake-phone pair <link> | send <text> | key <name> [count] | combo <combo> [count] | move <dx> <dy> | click [left|right|middle] | scroll <dy> | settings | set-speed <n> | set-fixes '<json>' | set-shortcuts '<json>'"),
+        Some("stay") => {
+            // Stays connected, pinging like the app, for <seconds>; fails if the desktop drops it.
+            let seconds: u64 = args.get(1).context("usage: caw-fake-phone stay <seconds>")?.parse()?;
+            let mut io = session(&identity).await?;
+            let until = tokio::time::Instant::now() + Duration::from_secs(seconds);
+            while tokio::time::Instant::now() < until {
+                send(&mut io, &Msg::Ping).await?;
+                match recv(&mut io).await? {
+                    Msg::Pong => {}
+                    Msg::Error { reason, .. } => bail!("desktop reported {reason}"),
+                    other => bail!("unexpected reply {other:?}"),
+                }
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+            finish(&mut io).await
+        }
+        _ => bail!("usage: caw-fake-phone pair <link> | send <text> | key <name> [count] | combo <combo> [count] | move <dx> <dy> | click [left|right|middle] | scroll <dy> | settings | set-speed <n> | set-fixes '<json>' | set-shortcuts '<json>' | stay <seconds>"),
     }
 }
