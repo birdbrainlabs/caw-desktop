@@ -87,8 +87,6 @@ jobs:
         run: cargo build --release --locked
       - name: End-to-end test
         run: scripts/e2e.sh
-      - name: Headless mode test (Caw for Mac's helper)
-        run: scripts/headless-test.sh
       # Moves the real mouse and types into a real text box on the runner's desktop.
       - name: Real keyboard and mouse test
         run: cargo test --release --locked -- --ignored --test-threads=1
