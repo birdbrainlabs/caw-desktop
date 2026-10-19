@@ -38,8 +38,10 @@ jobs:
       - name: End-to-end test
         run: scripts/e2e.sh "target/$TARGET/release"
       # Types into a real X11 window and moves the pointer, on a virtual screen.
+      # -noreset: Xvfb otherwise resets when the last client of one test disconnects,
+      # and the next test's connection can land mid-reset.
       - name: Real keyboard and mouse test (X11)
-        run: xvfb-run -a cargo test --release --locked -- --ignored --test-threads=1
+        run: xvfb-run -a -s "-screen 0 1280x1024x24 -noreset" cargo test --release --locked -- --ignored --test-threads=1
       - name: Package
         run: |
           mkdir -p dist
