@@ -2,6 +2,8 @@
 //! into the focused window. Protocol: PROTOCOL.md.
 
 mod cgevent;
+#[cfg(all(target_os = "linux", feature = "dictation"))]
+mod dictate;
 mod fixes;
 mod headless;
 #[cfg(target_os = "linux")]
@@ -497,6 +499,20 @@ async fn cli(args: Vec<String>) -> Result<()> {
             println!("shortcuts: caw-desktop shortcuts");
             Ok(())
         }
+        #[cfg(all(target_os = "linux", feature = "dictation"))]
+        Some("dictate") => match args.get(1).map(String::as_str) {
+            None => dictate::run(config_dir()?).await,
+            Some("--file") => {
+                let Some(file) = args.get(2) else { bail!("usage: caw-desktop dictate --file x.wav [--live] [--type]") };
+                let rest = &args[3..];
+                dictate::transcribe_file(config_dir()?, Path::new(file), rest.iter().any(|a| a == "--live"), rest.iter().any(|a| a == "--type")).await
+            }
+            Some(other) => bail!("unknown option {other:?}; usage: caw-desktop dictate [--file x.wav [--live] [--type]]"),
+        },
+        #[cfg(all(target_os = "linux", feature = "dictation"))]
+        Some("talk") => dictate::talk(config_dir()?, args.get(1).map(String::as_str)).await,
+        #[cfg(not(all(target_os = "linux", feature = "dictation")))]
+        Some("dictate" | "talk") => bail!("this build of Caw Desktop has no dictation (it needs Linux and the \"dictation\" feature)"),
         Some("unpair") => {
             let Some(id) = args.get(1) else { bail!("usage: caw-desktop unpair <id>") };
             let path = config_dir()?.join("devices.json");
@@ -524,6 +540,14 @@ async fn cli(args: Vec<String>) -> Result<()> {
             println!("caw-desktop shortcuts                          list shortcut buttons for the phone");
             println!("caw-desktop shortcuts add \"name\" super+enter   add one (keys: see PROTOCOL.md)");
             println!("caw-desktop shortcuts remove \"name\"            remove one");
+            #[cfg(all(target_os = "linux", feature = "dictation"))]
+            {
+                println!("caw-desktop dictate       hold-to-talk dictation on this computer (keeps the speech model loaded)");
+                println!("caw-desktop dictate --file x.wav [--live] [--type]  transcribe a WAV file, with timings");
+                println!("caw-desktop talk start|stop|toggle  start or stop recording (bind to a key's press and release)");
+                println!("caw-desktop talk status   is it recording?");
+                println!("caw-desktop talk bindings the Hyprland lines for the talk key");
+            }
             Ok(())
         }
     }
