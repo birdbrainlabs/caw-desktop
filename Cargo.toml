@@ -1,6 +1,6 @@
 [package]
 name = "caw-desktop"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 description = "Types text dictated in the Caw phone app into the focused window"
 license = "MIT"
@@ -53,6 +53,15 @@ wayland-protocols-misc = { version = "0.3", features = ["client"] }
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 libc = "0.2"
 xkbcommon-dl = "0.4"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSObject", "NSThread", "NSError", "NSDate", "NSNotification"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "NSApplication", "NSRunningApplication", "NSResponder", "NSStatusBar", "NSStatusItem", "NSStatusBarButton", "NSButton", "NSControl", "NSView", "NSMenu", "NSMenuItem", "NSCell", "NSImage", "NSEvent"] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFCGTypes", "CFDictionary", "CFNumber", "CFString"] }
+objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "CGEvent", "CGEventTypes", "CGEventSource", "CGRemoteOperation", "CGDirectDisplay", "CGError"] }
+objc2-application-services = { version = "0.3", default-features = false, features = ["std", "HIServices", "AXUIElement"] }
+objc2-service-management = { version = "0.3", default-features = false, features = ["std", "objc2", "objc2-foundation", "SMAppService"] }
 
 # The .deb for Ubuntu, Debian and Linux Mint (`cargo deb`, see .github/workflows/build.yml):
 # the receiver starts at login for every desktop user, and "Caw Desktop" in the

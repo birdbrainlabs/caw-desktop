@@ -12,7 +12,8 @@ Caw Desktop is part of the Caw family, with
 
 > **Status: early.** Used daily on Hyprland. Also works on GNOME, KDE Plasma,
 > X11 desktops (Cinnamon, XFCE, MATE) and Windows 10 and 11; those are tested
-> automatically but not yet by people, so please report how it goes.
+> automatically but not yet by people, so please report how it goes. The Mac
+> version is new in 0.4.
 
 ## How it works
 
@@ -22,6 +23,35 @@ Caw Desktop is part of the Caw family, with
 
 The connection is encrypted, and only phones you have paired can connect.
 See [Security](#security) and [PROTOCOL.md](PROTOCOL.md).
+
+## Install (Mac)
+
+Needs macOS 13 Ventura or newer, on Apple silicon or Intel.
+
+1. Download [caw-desktop-macos.zip](https://github.com/birdbrainlabs/caw-desktop/releases/latest/download/caw-desktop-macos.zip)
+   from the [latest release](https://github.com/birdbrainlabs/caw-desktop/releases/latest)
+   and double-click it to unzip it.
+2. Move **Caw Desktop** into your **Applications** folder and open it. It has
+   no window: it lives in the menu bar as a small keyboard icon.
+3. macOS asks to let Caw Desktop control your computer. Click **Open System
+   Settings** and turn on **Caw Desktop** under **Privacy & Security →
+   Accessibility**. Until you do, the menu shows a reminder that opens that
+   page, and nothing is typed.
+4. When macOS asks whether Caw Desktop may find devices on your local network,
+   click **Allow**, so the phone can reach it.
+5. Click the keyboard icon in the menu bar, choose **Pair phone…**, and scan the
+   QR code that opens in your web browser with Caw.
+
+Caw Desktop starts by itself when you log in; untick **Start at login** in its
+menu to stop that. The menu also shows which phone is connected. In shortcuts,
+**Super** is the **Command** key.
+
+[Caw for Mac](https://github.com/birdbrainlabs/caw), the dictation app you use
+by holding Fn, is a separate app. The two can run at the same time.
+
+The commands under [Use](#use) work in Terminal too:
+`"/Applications/Caw Desktop.app/Contents/MacOS/caw-desktop" devices`, and so on.
+On a Mac the settings live in `~/Library/Application Support/caw-desktop/`.
 
 ## Install (Windows)
 
@@ -137,7 +167,7 @@ typed. They match whole phrases only, so adding `"car app" → "Caw app"` leaves
 the word "car" alone everywhere else. The phone app can also edit them.
 
 **Shortcuts** are buttons on the phone that press a key combo on the computer,
-such as `super+enter` (Super is the Windows key) or `ctrl+shift+t`. Keys are
+such as `super+enter` (Super is the Windows key, or Command on a Mac) or `ctrl+shift+t`. Keys are
 named as in [PROTOCOL.md](PROTOCOL.md#v4-shortcuts): letters, digits, `f1`–`f12`,
 `enter`, `space`, `tab`, `escape`, arrows, `page_up`, `minus` and so on. Caw just
 presses the keys; what they do is up to your desktop. There are none until you
@@ -184,10 +214,13 @@ caw-fake-phone set-shortcuts '[{"name":"Terminal","key":"enter","mods":["super"]
 
 Run the receiver with `CAW_DRY_RUN=1` to log what it would type instead of
 typing, and `CAW_PORT=<port>` to use another port. `CAW_NO_OPEN=1` makes
-`pair --window` write its page without opening the browser.
+`pair --window` write its page without opening the browser, and `CAW_NO_MDNS=1`
+turns off announcing the computer on the network (the phone then finds it only
+by the address in the QR code).
 
 `cargo deb` builds the .deb (the release uses `cargo zigbuild` first, see
-[the workflow](.github/workflows/build.yml)).
+[the workflow](.github/workflows/build.yml)). `scripts/release-mac.sh` builds,
+signs and notarizes the Mac app; it needs a Developer ID certificate.
 
 ## License
 

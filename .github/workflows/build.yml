@@ -103,3 +103,20 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: caw-desktop-windows-x86_64.zip
+
+  # Unsigned build and tests. The signed, notarized app is built on a Mac with
+  # scripts/release-mac.sh and attached to the release by hand.
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Add the Intel target
+        run: rustup target add x86_64-apple-darwin
+      - name: Test
+        run: cargo test --locked
+      - name: Build
+        run: cargo build --release --locked
+      - name: Build for Intel Macs
+        run: cargo build --release --locked --bin caw-desktop --target x86_64-apple-darwin
+      - name: End-to-end test
+        run: scripts/e2e.sh

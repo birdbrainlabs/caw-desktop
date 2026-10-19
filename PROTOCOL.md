@@ -106,6 +106,7 @@ button that presses Super+Enter. Desktop v4 still accepts v1–v3 phones.
 
 - `mods` is optional (absent or `[]` = none). Allowed: `super` (the Windows key;
   Command on a Mac keyboard), `ctrl`, `alt`, `shift`, in any order, each at most once.
+  On macOS, Caw Desktop presses Command for `super`, Control for `ctrl` and Option for `alt`.
 - `key` values, in addition to the v1 ones: `a`–`z`, `0`–`9`, `f1`–`f12`, `space`,
   `page_up`, `page_down`, `insert`, and the punctuation keys `minus`, `equal`,
   `comma`, `period`, `slash`, `semicolon`, `apostrophe`, `bracket_left`,
@@ -131,7 +132,8 @@ which **replaces the whole list**:
   refuses the whole `settings_set` with `invalid_settings: …` and nothing changes.
 - The desktop stores names trimmed and `mods` in pressing order (super, ctrl, alt, shift).
 - None by default. They are saved on the computer in `~/.config/caw-desktop/shortcuts.json`
-  and can also be edited there with `caw-desktop shortcuts`.
+  (on a Mac, `~/Library/Application Support/caw-desktop/shortcuts.json`) and can also be
+  edited there with `caw-desktop shortcuts`.
 
 ## Resends
 

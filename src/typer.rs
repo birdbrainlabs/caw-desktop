@@ -1,7 +1,8 @@
 //! Types into the focused window. Linux uses whichever method `linux` picked
-//! for this desktop; Windows uses SendInput with Unicode key events. Both send
-//! characters rather than key positions, so any keyboard layout works.
-//! Key combos (v4) hold modifiers such as Super while tapping a key.
+//! for this desktop; Windows uses SendInput with Unicode key events; macOS uses
+//! Quartz key events carrying Unicode text. All send characters rather than key
+//! positions, so any keyboard layout works.
+//! Key combos (v4) hold modifiers such as Super (Command on a Mac) while tapping a key.
 
 use anyhow::{bail, Result};
 
@@ -118,7 +119,7 @@ pub fn parse_combo(key: &str, mods: &[String]) -> Result<(Key, Vec<Mod>)> {
 }
 
 /// CAW_DRY_RUN=1: log instead of typing (for tests).
-fn dry_run() -> bool {
+pub fn dry_run() -> bool {
     std::env::var_os("CAW_DRY_RUN").is_some()
 }
 
@@ -279,7 +280,33 @@ mod backend {
     }
 }
 
-#[cfg(not(any(target_os = "linux", windows)))]
+#[cfg(target_os = "macos")]
+mod backend {
+    use super::{Key, Mod};
+    use crate::cgevent::{self, combo_events, release_events, text_events};
+    use anyhow::Result;
+
+    pub async fn type_text(text: &str) -> Result<()> {
+        let events = text_events(text);
+        tokio::task::spawn_blocking(move || cgevent::post(&events)).await?
+    }
+
+    pub async fn press_key(key: Key, mods: &[Mod], count: u32) -> Result<()> {
+        let events = combo_events(key, mods, count);
+        let release = release_events(mods);
+        tokio::task::spawn_blocking(move || {
+            let result = cgevent::post(&events);
+            if result.is_err() {
+                // Don't leave a modifier held down if only part of the input got through.
+                let _ = cgevent::post(&release);
+            }
+            result
+        })
+        .await?
+    }
+}
+
+#[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
 mod backend {
     use super::{Key, Mod};
     use anyhow::{bail, Result};

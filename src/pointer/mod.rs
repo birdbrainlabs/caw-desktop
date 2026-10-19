@@ -1,6 +1,6 @@
 //! Moves the mouse. The input device lives on its own thread; commands go to
 //! it over a channel. Linux uses whichever method `crate::linux` picked for
-//! this desktop; Windows uses SendInput.
+//! this desktop; Windows uses SendInput; macOS uses Quartz events.
 
 use anyhow::{bail, Result};
 use std::sync::mpsc::{channel, Sender};
@@ -15,8 +15,12 @@ use self::linux as backend;
 mod windows;
 #[cfg(windows)]
 use self::windows as backend;
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "macos")]
+use self::macos as backend;
 
-#[cfg(not(any(target_os = "linux", windows)))]
+#[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
 mod backend {
     use super::Cmd;
     use anyhow::{bail, Result};
@@ -89,6 +93,10 @@ impl Pointer {
     }
 
     pub fn send(&self, cmd: Cmd) -> Result<()> {
+        #[cfg(target_os = "macos")]
+        if !backend::available() {
+            bail!("not allowed to control the mouse yet");
+        }
         if self.0.send(cmd).is_err() {
             bail!("mouse control stopped");
         }

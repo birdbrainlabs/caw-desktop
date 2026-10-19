@@ -7,6 +7,13 @@ use crate::pairing;
 use crate::proto::PairUri;
 use std::fmt::Write;
 
+/// How to get a new pairing code, on this system.
+const AGAIN: &str = if cfg!(target_os = "macos") {
+    "Choose <b>Pair phone…</b> from the Caw Desktop icon in the menu bar"
+} else {
+    "Open <b>Caw Desktop</b> from the apps menu"
+};
+
 /// The QR code for `text` as an SVG image, black on white with a quiet zone.
 pub fn qr_svg(text: &str) -> Option<String> {
     let qr = qrcode::QrCode::new(text.as_bytes()).ok()?;
@@ -38,7 +45,7 @@ pub fn pairing(code: &str, uri: &str, expires_ms: u64) -> String {
 When Caw says it's paired, you can close this page.</p>
 </div>
 <div id="expired" hidden>
-<p>This code has expired. Open <b>Caw Desktop</b> from the apps menu again to get a new one.</p>
+<p>This code has expired. {AGAIN} again to get a new one.</p>
 </div>
 <script>
 const end = {expires_ms}, left = document.getElementById("left");
@@ -63,7 +70,7 @@ pub fn outcome(outcome: &str) -> String {
     let text = if let Some(phone) = outcome.strip_prefix("paired with ") {
         format!("✓ Paired with {}. You can close this page.", escape(phone))
     } else {
-        format!("Pairing ended: {}. Open <b>Caw Desktop</b> from the apps menu to try again.", escape(outcome))
+        format!("Pairing ended: {}. {AGAIN} to try again.", escape(outcome))
     };
     page("Pair your phone", &format!("<p>{text}</p>"))
 }
@@ -71,7 +78,7 @@ pub fn outcome(outcome: &str) -> String {
 /// A page explaining why pairing couldn't start.
 pub fn error(why: &str) -> String {
     let body = format!(
-        "<p>Caw Desktop couldn't start pairing:</p><p class=\"small\">{}</p><p>Open <b>Caw Desktop</b> from the apps menu to try again.</p>",
+        "<p>Caw Desktop couldn't start pairing:</p><p class=\"small\">{}</p><p>{AGAIN} to try again.</p>",
         escape(why)
     );
     page("Pair your phone", &body)

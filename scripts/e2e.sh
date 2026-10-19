@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end test: start the receiver (dry run, nothing is typed), pair the
 # fake phone through `caw-desktop pair`, send text, keys and key combos, check
-# a resend is skipped and shortcuts round-trip. Runs on Linux and Windows (Git Bash). Usage: scripts/e2e.sh [target/release]
+# a resend is skipped and shortcuts round-trip. Runs on Linux, macOS and Windows (Git Bash). Usage: scripts/e2e.sh [target/release]
 set -euo pipefail
 bin=${1:-target/release}
 work=$(mktemp -d)
@@ -9,6 +9,12 @@ export CAW_DRY_RUN=1 CAW_PORT=47821
 # Keep keys and pairings out of the real config (Linux; Windows CI starts clean).
 export XDG_CONFIG_HOME=$work/config XDG_RUNTIME_DIR=$work/run
 mkdir -p "$XDG_RUNTIME_DIR" && chmod 700 "$XDG_RUNTIME_DIR"
+if [ "$(uname)" = Darwin ]; then
+  # macOS keeps the config in ~/Library and the control socket in TMPDIR. No mDNS,
+  # so the test doesn't ask for Local Network access.
+  export HOME=$work/home TMPDIR=$work/run CAW_NO_MDNS=1
+  mkdir -p "$HOME"
+fi
 
 "$bin/caw-desktop" serve >"$work/daemon.log" 2>&1 &
 daemon=$!

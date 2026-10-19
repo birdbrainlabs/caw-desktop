@@ -1,9 +1,12 @@
 //! Caw Desktop: receives dictated text from the Caw phone app and types it
 //! into the focused window. Protocol: PROTOCOL.md.
 
+mod cgevent;
 mod fixes;
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(target_os = "macos")]
+mod macapp;
 mod pointer;
 mod sendinput;
 mod settings;
@@ -14,7 +17,7 @@ use anyhow::{bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use caw_desktop::identity::{fingerprint, hex, short_id, Identity};
 use caw_desktop::pairing::{self, LABEL_DESKTOP, LABEL_PHONE};
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 use caw_desktop::pairpage;
 use caw_desktop::proto::{Msg, PairUri, Shortcut, DEFAULT_PORT, MAX_LINE, SERVICE_TYPE, VERSION};
 use caw_desktop::tlsconf;
@@ -142,6 +145,11 @@ impl State {
         load_devices(&self.devices_path()).iter().any(|d| d.fingerprint == fp)
     }
 
+    fn phone_name(&self, fp: &[u8; 32]) -> String {
+        let fp = hex(fp);
+        load_devices(&self.devices_path()).into_iter().find(|d| d.fingerprint == fp).map(|d| d.name).unwrap_or_else(|| "phone".into())
+    }
+
     fn trust(&self, fp: &[u8; 32], name: &str) -> Result<()> {
         let path = self.devices_path();
         let fp_hex = hex(fp);
@@ -190,6 +198,28 @@ impl State {
         win.finish(format!("paired with {device_name}"));
         *slot = None;
         Ok(reply)
+    }
+}
+
+/// Names of the phones connected right now, for the menu bar on a Mac.
+static CONNECTED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+/// A phone listed in CONNECTED while this lives.
+struct Connected(String);
+
+impl Connected {
+    fn new(name: String) -> Self {
+        CONNECTED.lock().unwrap().push(name.clone());
+        Self(name)
+    }
+}
+
+impl Drop for Connected {
+    fn drop(&mut self) {
+        let mut list = CONNECTED.lock().unwrap();
+        if let Some(i) = list.iter().position(|n| *n == self.0) {
+            list.remove(i);
+        }
     }
 }
 
@@ -315,9 +345,18 @@ fn log(msg: impl AsRef<str>) {
     eprintln!("caw-desktop: {}", msg.as_ref());
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    let runtime = tokio::runtime::Runtime::new()?;
+    // Caw Desktop.app opened from Finder or at login: the receiver with a menu bar icon.
+    #[cfg(target_os = "macos")]
+    if args.iter().all(|a| a.starts_with("-psn_")) && macapp::in_bundle() {
+        return mac_app(runtime);
+    }
+    runtime.block_on(cli(args))
+}
+
+async fn cli(args: Vec<String>) -> Result<()> {
     match args.first().map(String::as_str) {
         None | Some("serve") => serve(false).await,
         Some("pair") if args.get(1).is_some_and(|a| a == "--window") => pair_window().await,
@@ -437,6 +476,46 @@ async fn main() -> Result<()> {
     }
 }
 
+/// The Mac app: the receiver on background threads, the menu bar icon on this
+/// (the main) thread. Opened again while one runs, it shows the pairing page
+/// from the running one and quits.
+#[cfg(target_os = "macos")]
+fn mac_app(runtime: tokio::runtime::Runtime) -> Result<()> {
+    if runtime.block_on(control::connect()).is_ok() {
+        return runtime.block_on(pair_window());
+    }
+    let handle = runtime.handle().clone();
+    let stopped: Arc<Mutex<Option<String>>> = Arc::default();
+    let why = stopped.clone();
+    std::thread::spawn(move || {
+        if let Err(e) = runtime.block_on(serve(false)) {
+            log(format!("{e:#}"));
+            *why.lock().unwrap() = Some(format!("{e:#}"));
+        }
+    });
+    macapp::run(macapp::Hooks {
+        pair: Box::new(move || {
+            handle.spawn(async {
+                if let Err(e) = pair_from_menu().await {
+                    log(format!("pairing: {e:#}"));
+                }
+            });
+        }),
+        status: Box::new(move || {
+            if let Some(why) = stopped.lock().unwrap().as_ref() {
+                return format!("Not running: {why}");
+            }
+            let phones = CONNECTED.lock().unwrap().clone();
+            if phones.is_empty() {
+                "No phone connected".into()
+            } else {
+                format!("Connected: {}", phones.join(", "))
+            }
+        }),
+        config_dir: config_dir()?,
+    })
+}
+
 /// Ask a running receiver for a pairing code; start one if none is running.
 async fn pair() -> Result<()> {
     match control::connect().await {
@@ -467,16 +546,16 @@ where
     Ok(lines.next_line().await?.unwrap_or_else(|| "receiver stopped".into()))
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(unix))]
 async fn pair_window() -> Result<()> {
-    bail!("`pair --window` is only for Linux; use `caw-desktop pair`")
+    bail!("`pair --window` is only for Linux and macOS; use `caw-desktop pair`")
 }
 
 /// `pair --window`, for the apps menu: starts the receiver if it isn't running,
 /// then shows the pairing code as a page in the web browser instead of a terminal.
-/// The page is private to this user (mode 0600 in the runtime folder) and is
+/// The page is private to this user (mode 0600 in a private folder) and is
 /// rewritten without the code once pairing ends. `CAW_NO_OPEN=1` skips the browser.
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 async fn pair_window() -> Result<()> {
     let page = pair_page_path()?;
     let stream = match connect_or_start().await {
@@ -486,18 +565,38 @@ async fn pair_window() -> Result<()> {
             return Err(e);
         }
     };
+    pair_in_page(&page, stream).await
+}
+
+/// "Pair phone…" in the Mac menu bar: the same page, from the receiver running in this app.
+#[cfg(target_os = "macos")]
+async fn pair_from_menu() -> Result<()> {
+    let page = pair_page_path()?;
+    let stream = match control::connect().await {
+        Ok(s) => s,
+        Err(e) => {
+            show_page(&page, &pairpage::error(&format!("the receiver isn't running ({e})")))?;
+            return Err(e.into());
+        }
+    };
+    pair_in_page(&page, stream).await
+}
+
+/// Shows a new pairing code on the page, then what came of it.
+#[cfg(unix)]
+async fn pair_in_page(page: &Path, stream: control::Stream) -> Result<()> {
     let outcome = ask_to_pair(stream, |code, uri| {
         let expires_ms = now() * 1000 + PAIR_WINDOW.as_millis() as u64;
-        show_page(&page, &pairpage::pairing(code, uri, expires_ms))
+        show_page(page, &pairpage::pairing(code, uri, expires_ms))
     })
     .await?;
-    write_page(&page, &pairpage::outcome(&outcome))?;
+    write_page(page, &pairpage::outcome(&outcome))?;
     println!("{}", outcome_text(&outcome));
     Ok(())
 }
 
 /// Connects to the running receiver, first starting one in the background if needed.
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 async fn connect_or_start() -> Result<control::Stream> {
     use std::io::IsTerminal;
     use std::os::unix::process::CommandExt;
@@ -554,8 +653,24 @@ fn pair_page_path() -> Result<PathBuf> {
     Ok(dir.join(format!("caw-desktop-pair-{}.html", std::process::id())))
 }
 
+/// On a Mac: a private folder (0700) in this user's temporary folder, one page per pairing.
+#[cfg(target_os = "macos")]
+fn pair_page_path() -> Result<PathBuf> {
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static NEXT: AtomicU32 = AtomicU32::new(1);
+    let dir = std::env::temp_dir().join("caw-desktop");
+    std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir)?;
+    if !std::fs::symlink_metadata(&dir)?.is_dir() {
+        bail!("{} is not a folder", dir.display());
+    }
+    // Fails unless the folder is this user's.
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+    Ok(dir.join(format!("caw-desktop-pair-{}-{}.html", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed))))
+}
+
 /// Writes the page readable only by this user, replacing any earlier one.
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn write_page(path: &Path, html: &str) -> Result<()> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
@@ -566,14 +681,15 @@ fn write_page(path: &Path, html: &str) -> Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn show_page(path: &Path, html: &str) -> Result<()> {
     write_page(path, html)?;
     println!("Pairing page: {}", path.display());
     if std::env::var_os("CAW_NO_OPEN").is_some() {
         return Ok(());
     }
-    let mut opener = std::process::Command::new("xdg-open")
+    let opener = if cfg!(target_os = "macos") { "/usr/bin/open" } else { "xdg-open" };
+    let mut opener = std::process::Command::new(opener)
         .arg(path)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -625,6 +741,12 @@ async fn serve(start_pairing: bool) -> Result<()> {
     let saved_settings = settings::Settings::load(&dir.join("settings.json"));
     #[cfg(target_os = "linux")]
     log(format!("typing and mouse through {}", linux::init(&dir).await.describe()));
+    // macOS shows its dialog pointing to the Accessibility setting (once). Until the user
+    // allows it, typing and the mouse report errors to the phone.
+    #[cfg(target_os = "macos")]
+    if !typer::dry_run() && !cgevent::ask_for_access() {
+        log("not allowed to type or move the mouse yet: allow Caw Desktop in System Settings → Privacy & Security → Accessibility");
+    }
     let state = Arc::new(State {
         config_dir: dir,
         name: name.clone(),
@@ -645,7 +767,8 @@ async fn serve(start_pairing: bool) -> Result<()> {
     let acceptor = TlsAcceptor::from(tlsconf::server_config(&identity)?);
     log(format!("listening on {}:{port} as {name:?} (id {})", local_ip(), short_id(&state.fp)));
 
-    let _mdns = advertise(&state).map_err(|e| log(format!("mDNS disabled: {e:#}"))).ok();
+    // CAW_NO_MDNS=1 (for tests): the phone can only find the computer by the address in the QR code.
+    let _mdns = if std::env::var_os("CAW_NO_MDNS").is_some() { None } else { advertise(&state).map_err(|e| log(format!("mDNS disabled: {e:#}"))).ok() };
     tokio::spawn(control_loop(state.clone()));
 
     if start_pairing {
@@ -722,6 +845,7 @@ async fn handle(state: Arc<State>, acceptor: TlsAcceptor, tcp: TcpStream, addr: 
     let mut authed = false;
     let mut session = String::new();
     let mut warned_no_pointer = false;
+    let mut _connected = None;
 
     loop {
         let line = match timeout(IDLE_TIMEOUT, io.next()).await {
@@ -771,6 +895,7 @@ async fn handle(state: Arc<State>, acceptor: TlsAcceptor, tcp: TcpStream, addr: 
                 }
                 authed = true;
                 session = s.unwrap_or_default();
+                _connected = Some(Connected::new(state.phone_name(&peer_fp)));
                 log(format!("{addr}: connected ({})", short_id(&peer_fp)));
                 send(&mut io, Msg::HelloOk { desktop_name: state.name.clone() }).await?;
             }
