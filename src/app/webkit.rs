@@ -105,7 +105,11 @@ impl WebView {
     }
 
     fn settings(&self) -> Option<glib::Object> {
-        self.widget.find_property("settings")?;
+        // WebKitGTK 6.0 makes "settings" write-only; reading it panics.
+        let spec = self.widget.find_property("settings")?;
+        if !spec.flags().contains(glib::ParamFlags::READABLE) {
+            return None;
+        }
         self.widget.property::<Option<glib::Object>>("settings")
     }
 
