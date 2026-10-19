@@ -10,7 +10,10 @@
 //! If transcription or typing fails, the recording and any text are saved in
 //! ~/.local/share/caw-desktop/unsent/; otherwise no recording is kept.
 
+#![cfg_attr(not(feature = "app"), allow(dead_code))]
+
 mod audio;
+pub mod binding;
 mod recognizer;
 
 use crate::{fixes, typer};
@@ -19,6 +22,7 @@ use caw_desktop::speech::{cleaner, filter::HighPass, segmenter, wordfix};
 use recognizer::{Moonshine, Segmented, Timing, SAMPLE_RATE};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -37,25 +41,37 @@ const SPEECH_LEVEL: f32 = 0.02;
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(default)]
 pub struct Settings {
-    /// The hold-to-talk key: "ctrl_r" (Right Ctrl, the default), "alt_r",
-    /// "super_r", a keysym name such as "F13", or "code:<n>" for a raw key code.
+    /// The hold-to-talk key: "ctrl_r" (Right Ctrl), "alt_r", "super_r", "fn",
+    /// a keysym name such as "F13", or "code:<n>" for a raw key code. Unset:
+    /// Fn on Apple keyboards, Right Ctrl on others (binding::default_talk_key).
     /// Caw doesn't watch the key itself; the desktop's shortcut runs
     /// `caw-desktop talk start` / `talk stop` (see `caw-desktop talk bindings`).
-    pub talk_key: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub talk_key: Option<String>,
     /// The folder with the Moonshine model files. Default:
     /// ~/.local/share/caw-desktop/models/moonshine-base-en. CAW_MODEL_DIR overrides it.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub model_dir: Option<PathBuf>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { talk_key: "ctrl_r".into(), model_dir: None }
+        Self { talk_key: None, model_dir: None }
     }
 }
 
 impl Settings {
     pub fn load(config_dir: &Path) -> Self {
         std::fs::read(config_dir.join("dictation.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+    }
+
+    #[cfg_attr(not(feature = "app"), allow(dead_code))]
+    pub fn save(&self, config_dir: &Path) -> Result<()> {
+        crate::fsutil::write_private(&config_dir.join("dictation.json"), &serde_json::to_vec_pretty(self)?)
+    }
+
+    pub fn talk_key(&self) -> String {
+        self.talk_key.clone().filter(|k| !k.trim().is_empty()).unwrap_or_else(|| binding::default_talk_key().into())
     }
 
     fn model_dir(&self) -> PathBuf {
@@ -70,7 +86,7 @@ fn data_dir() -> PathBuf {
     dirs::data_dir().unwrap_or_else(std::env::temp_dir).join("caw-desktop")
 }
 
-fn socket_path() -> PathBuf {
+pub fn socket_path() -> PathBuf {
     match std::env::var_os("CAW_DICTATE_SOCKET") {
         Some(p) => p.into(),
         None => dirs::runtime_dir().unwrap_or_else(std::env::temp_dir).join("caw-dictate.sock"),
@@ -109,16 +125,6 @@ fn threads() -> i32 {
     std::env::var("CAW_SPEECH_THREADS").ok().and_then(|s| s.parse().ok()).filter(|&n| n > 0).unwrap_or(2)
 }
 
-/// The Hyprland key name for a talk key, and the modifier that is down when it is released.
-fn hyprland_key(talk_key: &str) -> (String, &'static str) {
-    match talk_key.trim().to_lowercase().as_str() {
-        "ctrl_r" | "right_ctrl" => ("Control_R".into(), "CTRL"),
-        "control_r" => ("Control_R".into(), "CTRL"),
-        "alt_r" | "right_alt" | "right_option" => ("Alt_R".into(), "ALT"),
-        "super_r" | "right_super" => ("Super_R".into(), "SUPER"),
-        _ => (talk_key.trim().to_string(), ""),
-    }
-}
 
 // ---- the speech worker ----
 
@@ -230,18 +236,85 @@ enum Phase {
     Tail { hold: u64, capture: audio::Capture },
 }
 
-struct Daemon {
+/// What the app shows: the pill and the tray.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Activity {
+    Idle,
+    /// The microphone is on (held, or in the short tail after release).
+    Listening,
+    /// Transcribing or typing a finished hold.
+    Working,
+}
+
+/// Told to the app as they happen.
+#[derive(Debug, Clone)]
+pub enum Event {
+    Activity(Activity),
+    /// A hold's text, as typed (without the trailing space). Kept in memory only.
+    Heard(String),
+    /// A hold's text was typed.
+    Typed,
+    /// Something went wrong, in words for people.
+    Failed(String),
+}
+
+type Hook = Box<dyn Fn(Event) + Send + Sync>;
+
+pub struct Daemon {
     config_dir: PathBuf,
     jobs: Mutex<mpsc::Sender<Job>>,
     phase: Mutex<Phase>,
     holds: std::sync::atomic::AtomicU64,
-    /// One hold types at a time, in the order they finished.
-    typing: tokio::sync::Mutex<()>,
+    /// Off (the app's "Dictation" switch): `start` does nothing.
+    enabled: AtomicBool,
+    /// The microphone's level now, 0..1 (f32 bits), as Caw for Mac measures it: 3 × the peak.
+    level: Arc<AtomicU32>,
+    /// Holds handed to the worker and not yet typed.
+    pending: AtomicUsize,
+    hook: Hook,
 }
 
 impl Daemon {
     fn send(&self, job: Job) {
         let _ = self.jobs.lock().unwrap().send(job);
+    }
+
+    pub fn set_enabled(&self, on: bool) {
+        self.enabled.store(on, Ordering::Relaxed);
+    }
+
+    pub fn level(&self) -> f32 {
+        f32::from_bits(self.level.load(Ordering::Relaxed))
+    }
+
+    pub fn activity(&self) -> Activity {
+        match *self.phase.lock().unwrap() {
+            Phase::Listening { .. } | Phase::Tail { .. } => Activity::Listening,
+            Phase::Idle if self.pending.load(Ordering::Relaxed) > 0 => Activity::Working,
+            Phase::Idle => Activity::Idle,
+        }
+    }
+
+    fn changed(&self) {
+        (self.hook)(Event::Activity(self.activity()));
+    }
+
+    /// `start`, logging and reporting a failure.
+    pub fn start_reporting(self: &Arc<Self>) -> Result<&'static str> {
+        self.start().map_err(|e| {
+            log(format!("could not start recording: {e:#}"));
+            notify(&format!("Could not start recording: {e:#}"));
+            (self.hook)(Event::Failed(format!("Could not start recording: {e:#}")));
+            e
+        })
+    }
+
+    /// Starts if idle, stops if listening (the pill's click, `talk toggle`).
+    pub fn toggle(self: &Arc<Self>) -> Result<&'static str> {
+        match self.status() {
+            "listening" => Ok(self.stop()),
+            _ => self.start_reporting(),
+        }
     }
 
     fn status(&self) -> &'static str {
@@ -253,6 +326,15 @@ impl Daemon {
     }
 
     fn start(self: &Arc<Self>) -> Result<&'static str> {
+        if !self.enabled.load(Ordering::Relaxed) {
+            return Ok("off");
+        }
+        let started = self.start_locked()?;
+        self.changed();
+        Ok(started)
+    }
+
+    fn start_locked(self: &Arc<Self>) -> Result<&'static str> {
         let mut phase = self.phase.lock().unwrap();
         match std::mem::replace(&mut *phase, Phase::Idle) {
             Phase::Idle => {}
@@ -265,7 +347,10 @@ impl Daemon {
         let hold = self.holds.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
         self.send(Job::Start);
         let jobs = self.jobs.lock().unwrap().clone();
+        let level = self.level.clone();
         let capture = match audio::start(move |rate, samples| {
+            let peak = samples.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+            level.store((peak * 3.0).min(1.0).to_bits(), Ordering::Relaxed);
             let _ = jobs.send(Job::Audio { rate, samples });
         }) {
             Ok(c) => c,
@@ -291,7 +376,7 @@ impl Daemon {
         Ok("listening")
     }
 
-    fn stop(self: &Arc<Self>) -> &'static str {
+    pub fn stop(self: &Arc<Self>) -> &'static str {
         let mut phase = self.phase.lock().unwrap();
         let Phase::Listening { .. } = &*phase else { return "idle" };
         let Phase::Listening { hold, capture } = std::mem::replace(&mut *phase, Phase::Idle) else { unreachable!() };
@@ -319,13 +404,18 @@ impl Daemon {
         let (Phase::Tail { capture, .. } | Phase::Listening { capture, .. }) = std::mem::replace(&mut *phase, Phase::Idle) else { unreachable!() };
         // Under the lock, so the next hold's Start can't overtake this Finish.
         capture.stop();
+        self.level.store(0, Ordering::Relaxed);
         let (tx, rx) = mpsc::channel();
         self.send(Job::Finish(tx));
+        self.pending.fetch_add(1, Ordering::Relaxed);
         drop(phase);
+        self.changed();
         let me = self.clone();
         tokio::spawn(async move {
             let heard = tokio::task::spawn_blocking(move || rx.recv().unwrap_or_default()).await.unwrap_or_default();
             me.deliver(heard).await;
+            me.pending.fetch_sub(1, Ordering::Relaxed);
+            me.changed();
         });
         true
     }
@@ -343,15 +433,18 @@ impl Daemon {
             return log(format!("nothing heard (loudest {:.3})", heard.loudest));
         }
         // As the phone sends it: a trailing space, so the next dictation follows on. Never a Return.
-        let typed: String = text.chars().map(|c| if c.is_control() { ' ' } else { c }).collect::<String>() + " ";
-        let _turn = self.typing.lock().await;
-        if let Err(e) = typer::type_text(&typed).await {
-            self.unsent(&heard, &text, &format!("typing failed: {e:#}"));
+        let line: String = text.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+        (self.hook)(Event::Heard(line.clone()));
+        let _turn = typer::TURN.lock().await;
+        match typer::type_text(&(line + " ")).await {
+            Ok(()) => (self.hook)(Event::Typed),
+            Err(e) => self.unsent(&heard, &text, &format!("typing failed: {e:#}")),
         }
     }
 
     fn unsent(&self, heard: &Heard, text: &str, why: &str) {
         let why = upper_first(why);
+        (self.hook)(Event::Failed(why.clone()));
         match save_unsent(&heard.audio, text) {
             Ok(path) => {
                 log(format!("{why}; saved the recording as {}", path.display()));
@@ -403,9 +496,17 @@ fn log(msg: impl AsRef<str>) {
     eprintln!("caw-desktop: {}", msg.as_ref());
 }
 
+static QUIET: AtomicBool = AtomicBool::new(false);
+
+/// The app shows errors on the floating Crumb instead of as notifications while he is shown.
+#[cfg_attr(not(feature = "app"), allow(dead_code))]
+pub fn set_quiet(quiet: bool) {
+    QUIET.store(quiet, Ordering::Relaxed);
+}
+
 /// A desktop notification, for errors only. Quietly does nothing without notify-send.
 fn notify(msg: &str) {
-    if cfg!(test) {
+    if cfg!(test) || QUIET.load(Ordering::Relaxed) {
         return;
     }
     let _ = std::process::Command::new("notify-send")
@@ -419,6 +520,21 @@ fn notify(msg: &str) {
 
 /// `caw-desktop dictate`: the daemon.
 pub async fn run(config_dir: PathBuf) -> Result<()> {
+    run_with(config_dir, Options { enabled: true, hook: Box::new(|_| {}), ready: None, signals: true }).await
+}
+
+/// How the app runs dictation.
+pub struct Options {
+    /// The app's "Dictation" switch at start.
+    pub enabled: bool,
+    pub hook: Box<dyn Fn(Event) + Send + Sync>,
+    /// Gets the daemon once it is listening on the talk socket.
+    pub ready: Option<tokio::sync::oneshot::Sender<Arc<Daemon>>>,
+    /// Stop on Ctrl+C and SIGTERM (the command line; the app handles them itself).
+    pub signals: bool,
+}
+
+pub async fn run_with(config_dir: PathBuf, opts: Options) -> Result<()> {
     let path = socket_path();
     if UnixStream::connect(&path).await.is_ok() {
         bail!("dictation is already running ({})", path.display());
@@ -435,19 +551,41 @@ pub async fn run(config_dir: PathBuf) -> Result<()> {
     let (tx, rx) = mpsc::channel();
     let model_dir = settings.model_dir();
     std::thread::Builder::new().name("caw-speech".into()).spawn(move || worker(model_dir, rx))?;
-    let daemon = Arc::new(Daemon { config_dir, jobs: Mutex::new(tx), phase: Mutex::new(Phase::Idle), holds: Default::default(), typing: Default::default() });
-    let (key, _) = hyprland_key(&settings.talk_key);
-    log(format!("dictation ready: hold {key} to talk ({})", path.display()));
+    let daemon = Arc::new(Daemon {
+        config_dir,
+        jobs: Mutex::new(tx),
+        phase: Mutex::new(Phase::Idle),
+        holds: Default::default(),
+        enabled: AtomicBool::new(opts.enabled),
+        level: Default::default(),
+        pending: Default::default(),
+        hook: opts.hook,
+    });
+    log(format!("dictation ready: {} ({})", binding::startup_hint(&settings.talk_key()), path.display()));
+    if let Some(ready) = opts.ready {
+        let _ = ready.send(daemon.clone());
+    }
 
-    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    // Only on the command line: in the app, the signal handlers are the app's (it quits as a whole).
+    let mut term = if opts.signals { Some(tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?) } else { None };
     loop {
+        let signalled = async {
+            match term.as_mut() {
+                Some(term) => {
+                    tokio::select! {
+                        _ = tokio::signal::ctrl_c() => {}
+                        _ = term.recv() => {}
+                    }
+                }
+                None => std::future::pending::<()>().await,
+            }
+        };
         let stream = tokio::select! {
             accepted = listener.accept() => match accepted {
                 Ok((s, _)) => s,
                 Err(e) => { log(format!("control socket: {e}")); continue; }
             },
-            _ = tokio::signal::ctrl_c() => break,
-            _ = term.recv() => break,
+            () = signalled => break,
         };
         let daemon = daemon.clone();
         tokio::spawn(async move {
@@ -457,16 +595,9 @@ pub async fn run(config_dir: PathBuf) -> Result<()> {
                 return;
             }
             let reply = match line.trim() {
-                "start" => daemon.start().map_err(|e| {
-                    log(format!("could not start recording: {e:#}"));
-                    notify(&format!("Could not start recording: {e:#}"));
-                    e
-                }),
+                "start" => daemon.start_reporting(),
                 "stop" => Ok(daemon.stop()),
-                "toggle" => match daemon.status() {
-                    "listening" => Ok(daemon.stop()),
-                    _ => daemon.start(),
-                },
+                "toggle" => daemon.toggle(),
                 "status" => Ok(daemon.status()),
                 other => Err(anyhow::anyhow!("unknown command {other:?}")),
             };
@@ -513,18 +644,19 @@ pub async fn talk(config_dir: PathBuf, args: &[String]) -> Result<()> {
     }
 }
 
-/// Hyprland lines for `key` (a Hyprland key name such as Alt_R or XF86Fn, or
-/// code:<n>), else for the talk key setting: press starts, release stops.
+/// Hyprland lines for `key` (ctrl_r, alt_r, fn, a Hyprland key name such as
+/// Alt_R or XF86Fn, or code:<n>), else for the talk key setting: press starts,
+/// release stops. Lua (`o.bind` or `hl.bind`) or hyprland.conf, as the config uses.
 fn print_bindings(config_dir: &Path, key: Option<&str>) {
-    let talk_key = key.map(String::from).unwrap_or_else(|| Settings::load(config_dir).talk_key);
-    let (key, release_mod) = hyprland_key(&talk_key);
-    let exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "caw-desktop".into());
-    println!("# Caw hold-to-talk ({talk_key}). Hyprland: add to your bindings file.");
-    println!("bind = , {key}, exec, {exe} talk start");
-    println!("bindr = {release_mod}, {key}, exec, {exe} talk stop");
-    if !release_mod.is_empty() {
-        // Some setups report the modifier on release, some don't; a second stop does nothing.
-        println!("bindr = , {key}, exec, {exe} talk stop");
+    let talk_key = key.map(String::from).unwrap_or_else(|| Settings::load(config_dir).talk_key());
+    let dir = binding::hypr_dir();
+    let style = binding::style(&dir);
+    if let Some(bound) = binding::find(&dir) {
+        println!("{} Bound now: {} (in {})", if style == binding::Style::Conf { "#" } else { "--" }, bound.keys, bound.file.display());
+    }
+    println!("{} Hyprland: add to {} (replacing any older Caw lines).", if style == binding::Style::Conf { "#" } else { "--" }, binding::target_file(&dir, style).display());
+    for line in binding::lines(style, &talk_key, &binding::exe()) {
+        println!("{line}");
     }
 }
 
@@ -587,16 +719,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn talk_key_defaults_to_right_ctrl() {
-        assert_eq!(Settings::default().talk_key, "ctrl_r");
+    fn talk_key_default_depends_on_the_keyboard() {
         let s: Settings = serde_json::from_str("{}").unwrap();
-        assert_eq!(s.talk_key, "ctrl_r");
-        assert_eq!(hyprland_key("ctrl_r"), ("Control_R".into(), "CTRL"));
-        assert_eq!(hyprland_key("alt_r"), ("Alt_R".into(), "ALT"));
-        assert_eq!(hyprland_key("code:472"), ("code:472".into(), ""));
-        assert_eq!(hyprland_key("Alt_R"), ("Alt_R".into(), "ALT"));
-        assert_eq!(hyprland_key("Control_R"), ("Control_R".into(), "CTRL"));
-        assert_eq!(hyprland_key("XF86Fn"), ("XF86Fn".into(), ""));
+        assert_eq!(s.talk_key, None);
+        assert!(["ctrl_r", "fn"].contains(&s.talk_key().as_str()));
+        let s: Settings = serde_json::from_str(r#"{"talk_key": "alt_r"}"#).unwrap();
+        assert_eq!(s.talk_key(), "alt_r");
+        assert_eq!(serde_json::to_string(&Settings::default()).unwrap(), "{}");
     }
 
     #[test]

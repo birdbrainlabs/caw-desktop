@@ -32,6 +32,10 @@ pub fn get() -> &'static Input {
 }
 
 pub async fn init(config_dir: &Path) -> &'static Input {
+    // Once per process (the app runs the receiver and dictation together).
+    if let Some(input) = INPUT.get() {
+        return input;
+    }
     let choice = std::env::var("CAW_INPUT").unwrap_or_default();
     let input = pick(&choice, config_dir).await.unwrap_or_else(|e| Input::Unavailable(format!("{e:#}")));
     if let Input::Wlr = input {

@@ -1,10 +1,14 @@
 //! Caw Desktop: receives dictated text from the Caw phone app and types it
 //! into the focused window. Protocol: PROTOCOL.md.
 
+#[cfg(all(target_os = "linux", feature = "app"))]
+mod app;
 mod cgevent;
 #[cfg(all(target_os = "linux", feature = "dictation"))]
 mod dictate;
 mod fixes;
+#[cfg_attr(not(all(target_os = "linux", feature = "dictation")), allow(dead_code))]
+mod fsutil;
 mod headless;
 #[cfg(target_os = "linux")]
 mod linux;
@@ -73,16 +77,46 @@ struct State {
     fp: [u8; 32],
     port: u16,
     pairing: Mutex<Option<PairWindow>>,
-    typing: tokio::sync::Mutex<()>,
     pointer: Option<pointer::Pointer>,
     recent: Mutex<std::collections::VecDeque<(u64, Instant)>>,
     settings: Mutex<settings::Settings>,
-    /// Bumped whenever a phone is paired or removed, so connections of a
-    /// removed phone close at once.
+    /// Bumped whenever a phone is paired or removed, or phones are turned
+    /// off, so connections that may no longer type close at once.
     devices_changed: tokio::sync::watch::Sender<u64>,
+    /// "Let phones type on this computer" (the app's switch; always on otherwise).
+    /// While off the receiver doesn't listen, except while pairing.
+    phones_on: std::sync::atomic::AtomicBool,
+    /// The app's pairing window is open: listen even while phones are off.
+    pair_window_open: std::sync::atomic::AtomicBool,
+    /// Wakes the listener when `receiving()` may have changed.
+    gate: tokio::sync::Notify,
 }
 
 impl State {
+    /// Whether the receiver listens for phones now.
+    fn receiving(&self) -> bool {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.phones_on.load(Relaxed) || self.pair_window_open.load(Relaxed) || self.pairing.lock().unwrap().as_ref().is_some_and(|w| Instant::now() < w.expires)
+    }
+
+    /// Turns "Let phones type on this computer" on or off.
+    #[cfg_attr(not(all(target_os = "linux", feature = "app")), allow(dead_code))]
+    fn set_phones(&self, on: bool) {
+        self.phones_on.store(on, std::sync::atomic::Ordering::Relaxed);
+        self.gate_changed();
+    }
+
+    #[cfg_attr(not(all(target_os = "linux", feature = "app")), allow(dead_code))]
+    fn set_pair_window(&self, open: bool) {
+        self.pair_window_open.store(open, std::sync::atomic::Ordering::Relaxed);
+        self.gate_changed();
+    }
+
+    fn gate_changed(&self) {
+        self.gate.notify_one();
+        self.devices_changed.send_modify(|n| *n = n.wrapping_add(1));
+    }
+
     /// True if this exact message (same phone, session, id and content) was already handled recently.
     /// Caw resends queued messages with their original ids after a reconnect; its ids restart
     /// when the app restarts, which is why the session is part of the key.
@@ -195,17 +229,22 @@ impl State {
         if let Some(mut win) = self.pairing.lock().unwrap().take() {
             win.finish("cancelled".into());
         }
+        self.gate.notify_one();
     }
 
     /// Opens a pairing window and returns (code, uri, receiver for the outcome).
     fn start_pairing(&self) -> (String, String, oneshot::Receiver<String>) {
         let code = pairing::new_code();
         let (tx, rx) = oneshot::channel();
-        let mut slot = self.pairing.lock().unwrap();
-        if let Some(old) = slot.as_mut() {
-            old.finish("replaced by a new pairing code".into());
+        {
+            let mut slot = self.pairing.lock().unwrap();
+            if let Some(old) = slot.as_mut() {
+                old.finish("replaced by a new pairing code".into());
+            }
+            *slot = Some(PairWindow { code: code.clone(), expires: Instant::now() + PAIR_WINDOW, failures: 0, done: Some(tx) });
         }
-        *slot = Some(PairWindow { code: code.clone(), expires: Instant::now() + PAIR_WINDOW, failures: 0, done: Some(tx) });
+        // While phones are off, the receiver starts listening for this pairing.
+        self.gate.notify_one();
         let uri = PairUri { host: local_ip().to_string(), port: self.port, code: code.clone(), name: self.name.clone() };
         (code, uri.to_uri(), rx)
     }
@@ -306,8 +345,12 @@ mod control {
     use std::path::PathBuf;
     use tokio::net::{UnixListener, UnixStream};
 
+    /// CAW_CONTROL_SOCKET overrides it (for running a second, test receiver).
     fn path() -> PathBuf {
-        dirs::runtime_dir().unwrap_or_else(std::env::temp_dir).join("caw-desktop.sock")
+        match std::env::var_os("CAW_CONTROL_SOCKET") {
+            Some(p) => p.into(),
+            None => dirs::runtime_dir().unwrap_or_else(std::env::temp_dir).join("caw-desktop.sock"),
+        }
     }
 
     pub type Stream = UnixStream;
@@ -327,6 +370,12 @@ mod control {
         pub async fn accept(&mut self) -> Result<UnixStream> {
             Ok(self.0.accept().await?.0)
         }
+    }
+
+    /// Removes the socket file, for a receiver that is quitting.
+    #[cfg_attr(not(feature = "app"), allow(dead_code))]
+    pub fn remove() {
+        let _ = std::fs::remove_file(path());
     }
 }
 
@@ -401,6 +450,12 @@ fn main() -> Result<()> {
         // Don't wait for anything still running (a phone mid-connection, the mDNS thread).
         runtime.shutdown_timeout(Duration::from_secs(1));
         std::process::exit(code);
+    }
+    if args.first().is_some_and(|a| a == "app") {
+        #[cfg(all(target_os = "linux", feature = "app"))]
+        return app::run(runtime);
+        #[cfg(not(all(target_os = "linux", feature = "app")))]
+        bail!("this build of Caw Desktop has no app (it needs Linux and the \"app\" feature)");
     }
     // Caw Desktop.app opened from Finder or at login: the receiver with a menu bar icon.
     #[cfg(target_os = "macos")]
@@ -527,6 +582,8 @@ async fn cli(args: Vec<String>) -> Result<()> {
             Ok(())
         }
         _ => {
+            #[cfg(all(target_os = "linux", feature = "app"))]
+            println!("caw-desktop app        the app: receiver, dictation, tray icon and the floating pill");
             println!("caw-desktop            run the receiver (same as `serve`)");
             println!("caw-desktop serve --headless  the receiver for another app: JSON lines on stdin/stdout");
             println!("caw-desktop pair       show a pairing code and QR code for the phone");
@@ -546,7 +603,7 @@ async fn cli(args: Vec<String>) -> Result<()> {
                 println!("caw-desktop dictate --file x.wav [--live] [--type]  transcribe a WAV file, with timings");
                 println!("caw-desktop talk start|stop|toggle  start or stop recording (bind to a key's press and release)");
                 println!("caw-desktop talk status   is it recording?");
-                println!("caw-desktop talk bindings [key]  the Hyprland lines for the talk key (or e.g. Alt_R, XF86Fn)");
+                println!("caw-desktop talk bindings [key]  the Hyprland lines for the talk key (e.g. ctrl_r, alt_r, fn, F13)");
             }
             Ok(())
         }
@@ -804,6 +861,20 @@ fn show_pairing(code: &str, uri: &str) {
 }
 
 async fn serve(start_pairing: bool) -> Result<()> {
+    serve_with(ServeOptions { start_pairing, phones_on: true, ready: None }).await
+}
+
+struct ServeOptions {
+    /// Open a pairing code at once and print it (`caw-desktop pair` with no receiver running).
+    start_pairing: bool,
+    /// "Let phones type on this computer"; off, the receiver listens only while pairing.
+    phones_on: bool,
+    /// Gets the receiver's state once it is set up (the app).
+    ready: Option<oneshot::Sender<Arc<State>>>,
+}
+
+async fn serve_with(opts: ServeOptions) -> Result<()> {
+    let ServeOptions { start_pairing, phones_on, ready } = opts;
     // Started twice (say by both a login item and a systemd unit), the second one bows out
     // instead of fighting over the port and asking again for keyboard and mouse control.
     if control::connect().await.is_ok() {
@@ -838,42 +909,23 @@ async fn serve(start_pairing: bool) -> Result<()> {
         fp: identity.fingerprint(),
         port,
         pairing: Mutex::new(None),
-        typing: tokio::sync::Mutex::new(()),
         pointer: pointer::Pointer::start().map_err(|e| log(format!("mouse control disabled: {e:#}"))).ok(),
         recent: Mutex::new(std::collections::VecDeque::new()),
         settings: Mutex::new(saved_settings),
         devices_changed: tokio::sync::watch::channel(0).0,
+        phones_on: std::sync::atomic::AtomicBool::new(phones_on),
+        pair_window_open: std::sync::atomic::AtomicBool::new(false),
+        gate: tokio::sync::Notify::new(),
     });
+    if let Some(ready) = ready {
+        let _ = ready.send(state.clone());
+    }
 
     if let Err(e) = fixes::ensure_file(&state.fixes_path()) {
         log(format!("word fixes disabled: {e:#}"));
     }
 
-    let listener = match listen(port) {
-        Ok(l) => l,
-        Err(e) if headless::on() && port_in_use(&e) => {
-            log(format!("{e:#}"));
-            headless::emit(&headless::Event::Stopped {
-                reason: "port_in_use".into(),
-                message: format!("another program is already using port {port}"),
-            });
-            std::process::exit(headless::EXIT_IN_USE);
-        }
-        Err(e) => return Err(e),
-    };
     let acceptor = TlsAcceptor::from(tlsconf::server_config(&identity)?);
-    log(format!("listening on {}:{port} as {name:?} (id {})", local_ip(), short_id(&state.fp)));
-    headless::emit(&headless::Event::Listening {
-        port,
-        name: name.clone(),
-        id: short_id(&state.fp),
-        version: env!("CARGO_PKG_VERSION").into(),
-        accessibility: may_type(),
-    });
-    headless::emit(&headless::Event::Devices { devices: state.paired_phones() });
-
-    // CAW_NO_MDNS=1 (for tests): the phone can only find the computer by the address in the QR code.
-    let _mdns = if std::env::var_os("CAW_NO_MDNS").is_some() { None } else { advertise(&state).map_err(|e| log(format!("mDNS disabled: {e:#}"))).ok() };
     // Headless, the app talks to this receiver over stdin, and nothing else is
     // offered on the control socket: a standalone receiver started later then
     // finds the port taken instead of handing its menu to this one.
@@ -906,32 +958,87 @@ async fn serve(start_pairing: bool) -> Result<()> {
         });
     }
 
+    let mut first = true;
     loop {
-        let (tcp, mut addr) = tokio::select! {
-            accepted = listener.accept() => accepted?,
-            () = &mut stdin_closed => {
-                log("the app closed stdin; stopping");
-                return Ok(());
+        // Phones turned off (the app): no port and no mDNS until they are on again or a pairing starts.
+        if !state.receiving() {
+            log("not listening for phones (\"Let phones type\" is off)");
+            headless::emit(&headless::Event::Devices { devices: state.paired_phones() });
+            while !state.receiving() {
+                tokio::select! {
+                    () = state.gate.notified() => {}
+                    () = &mut stdin_closed => return Ok(()),
+                }
             }
+        }
+        let listener = match listen(port) {
+            Ok(l) => l,
+            Err(e) if headless::on() && port_in_use(&e) => {
+                log(format!("{e:#}"));
+                headless::emit(&headless::Event::Stopped {
+                    reason: "port_in_use".into(),
+                    message: format!("another program is already using port {port}"),
+                });
+                std::process::exit(headless::EXIT_IN_USE);
+            }
+            Err(e) => return Err(e),
         };
-        addr.set_ip(addr.ip().to_canonical());
-        let (state, acceptor) = (state.clone(), acceptor.clone());
-        tokio::spawn(async move {
-            if let Err(e) = handle(state, acceptor, tcp, addr).await {
-                log(format!("{addr}: {e:#}"));
-            }
-        });
+        log(format!("listening on {}:{port} as {name:?} (id {})", local_ip(), short_id(&state.fp)));
+        if first {
+            first = false;
+            headless::emit(&headless::Event::Listening {
+                port,
+                name: name.clone(),
+                id: short_id(&state.fp),
+                version: env!("CARGO_PKG_VERSION").into(),
+                accessibility: may_type(),
+            });
+        }
+        headless::emit(&headless::Event::Devices { devices: state.paired_phones() });
+        // CAW_NO_MDNS=1 (for tests): the phone can only find the computer by the address in the QR code.
+        let _mdns = if std::env::var_os("CAW_NO_MDNS").is_some() { None } else { advertise(&state).map_err(|e| log(format!("mDNS disabled: {e:#}"))).ok() };
+        loop {
+            let (tcp, mut addr) = tokio::select! {
+                accepted = listener.accept() => accepted?,
+                () = state.gate.notified() => {
+                    if state.receiving() {
+                        continue;
+                    }
+                    break;
+                }
+                () = &mut stdin_closed => {
+                    log("the app closed stdin; stopping");
+                    return Ok(());
+                }
+            };
+            addr.set_ip(addr.ip().to_canonical());
+            let (state, acceptor) = (state.clone(), acceptor.clone());
+            tokio::spawn(async move {
+                if let Err(e) = handle(state, acceptor, tcp, addr).await {
+                    log(format!("{addr}: {e:#}"));
+                }
+            });
+        }
     }
 }
 
-fn advertise(state: &State) -> Result<mdns_sd::ServiceDaemon> {
+/// The mDNS advertisement, withdrawn when dropped.
+struct Mdns(mdns_sd::ServiceDaemon);
+
+impl Drop for Mdns {
+    fn drop(&mut self) {
+        let _ = self.0.shutdown();
+    }
+}
+
+fn advertise(state: &State) -> Result<Mdns> {
     let daemon = mdns_sd::ServiceDaemon::new()?;
     let id = short_id(&state.fp);
     let props = [("id", id.as_str()), ("name", state.name.as_str()), ("v", "1")];
     let host = format!("{}.local.", state.name);
     let info = mdns_sd::ServiceInfo::new(SERVICE_TYPE, &state.name, &host, "", state.port, &props[..])?.enable_addr_auto();
     daemon.register(info)?;
-    Ok(daemon)
+    Ok(Mdns(daemon))
 }
 
 /// True when listening failed because something else has the port.
@@ -1041,7 +1148,7 @@ async fn handle(state: Arc<State>, acceptor: TlsAcceptor, tcp: TcpStream, addr: 
         let next = tokio::select! {
             next = timeout(IDLE_TIMEOUT, io.next()) => next,
             Ok(()) = devices_changed.changed(), if authed => {
-                if state.is_trusted(&peer_fp) {
+                if state.is_trusted(&peer_fp) && state.receiving() {
                     continue;
                 }
                 let _ = send(&mut io, Msg::Error { id: None, reason: "not_paired".into() }).await;
@@ -1158,7 +1265,7 @@ async fn handle(state: Arc<State>, acceptor: TlsAcceptor, tcp: TcpStream, addr: 
             Msg::Text { id, text } => {
                 let original = Msg::Text { id, text: text.clone() };
                 let result = {
-                    let _turn = state.typing.lock().await;
+                    let _turn = typer::TURN.lock().await;
                     let text = fixes::apply(&text, &fixes::load(&state.fixes_path()));
                     typer::type_text(&text).await
                 };
@@ -1175,7 +1282,7 @@ async fn handle(state: Arc<State>, acceptor: TlsAcceptor, tcp: TcpStream, addr: 
                     continue;
                 };
                 let result = {
-                    let _turn = state.typing.lock().await;
+                    let _turn = typer::TURN.lock().await;
                     typer::press_key(key, &mods, count).await
                 };
                 if result.is_err() {

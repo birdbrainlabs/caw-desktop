@@ -152,6 +152,27 @@ presses the keys; what they do is up to your desktop. There are none until you
 add some, here or in the phone app's settings; the phone picks up changes made
 here the next time it connects.
 
+### The app (Linux)
+
+`caw-desktop app` (built with `--features app`; needs GTK 4.12+ and
+gtk4-layer-shell) runs the receiver and hold-to-talk dictation together, with:
+
+- a **tray icon**: dictation on/off, "Let phones type on this computer",
+  Word fixes…, Pair a phone…, Settings… and Quit;
+- **Crumb**, floating above your windows (layer-shell desktops such as
+  Hyprland and Sway): click him to start or stop talking, drag him anywhere.
+  He never takes the keyboard, so the text lands where you were typing. He
+  needs WebKitGTK 6.0 (`webkitgtk-6.0`, `libwebkitgtk-6.0-4`); without it a
+  plain orb stands in;
+- **Word fixes**: your own list (`word-fixes.personal.json`, the Caw for Mac
+  and Android format) with the last dictation above it: select a misheard
+  word there to start a fix. The last dictation is kept in memory only;
+- **Pair a phone**: the QR code, the typed code and your paired phones;
+- **Settings**: the talk key, with the exact lines for your Hyprland config.
+
+`packaging/linux/caw-desktop-app.desktop` is its menu entry and
+`caw-desktop-app-autostart.desktop` starts it at login.
+
 ## Security
 
 - Pairing uses a one-time 16-character code (shown as a QR code) that expires
@@ -184,6 +205,7 @@ caw-fake-phone key backspace 3
 caw-fake-phone combo ctrl+shift+t
 caw-fake-phone move 200 100
 caw-fake-phone click left
+caw-fake-phone drag 40 -20
 caw-fake-phone scroll 30
 caw-fake-phone settings
 caw-fake-phone set-speed 2

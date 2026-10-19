@@ -118,6 +118,10 @@ pub fn parse_combo(key: &str, mods: &[String]) -> Result<(Key, Vec<Mod>)> {
     Ok((key, parsed))
 }
 
+/// One typer at a time (a phone's text and a dictation never interleave);
+/// hold this while typing.
+pub static TURN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// CAW_DRY_RUN=1: log instead of typing (for tests).
 pub fn dry_run() -> bool {
     std::env::var_os("CAW_DRY_RUN").is_some()

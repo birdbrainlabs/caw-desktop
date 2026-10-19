@@ -19,6 +19,16 @@ pub const EXIT_IN_USE: i32 = 3;
 
 static ON: AtomicBool = AtomicBool::new(false);
 
+/// Another listener for the same events, in this process (the desktop app).
+type Hook = Box<dyn Fn(&Event) + Send + Sync>;
+static HOOK: std::sync::OnceLock<Hook> = std::sync::OnceLock::new();
+
+/// Also hands every event to `hook`, headless or not. Set once.
+#[cfg_attr(not(all(target_os = "linux", feature = "app")), allow(dead_code))]
+pub fn set_hook(hook: Hook) {
+    let _ = HOOK.set(hook);
+}
+
 pub fn enable() {
     ON.store(true, Ordering::Relaxed);
 }
@@ -41,7 +51,7 @@ pub struct PairedPhone {
     pub paired_at: u64,
 }
 
-#[derive(Serialize, Debug, PartialEq)]
+#[derive(Serialize, Debug, Clone, PartialEq)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum Event {
     /// The receiver is up. `accessibility`: whether macOS lets this process
@@ -77,8 +87,11 @@ pub enum Command {
     Devices,
 }
 
-/// Writes one event line to stdout, in headless mode only.
+/// Writes one event line to stdout, in headless mode only (and hands it to the hook).
 pub fn emit(event: &Event) {
+    if let Some(hook) = HOOK.get() {
+        hook(event);
+    }
     if !on() {
         return;
     }

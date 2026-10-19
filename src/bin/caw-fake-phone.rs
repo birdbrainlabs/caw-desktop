@@ -193,6 +193,21 @@ async fn main() -> Result<()> {
             expect_ack(&mut io, 1).await?;
             finish(&mut io).await
         }
+        Some("drag") => {
+            let n = |i: usize| -> Result<f64> { Ok(args.get(i).context("usage: caw-fake-phone drag <dx> <dy>")?.parse()?) };
+            let (dx, dy) = (n(1)?, n(2)?);
+            let mut io = session(&identity).await?;
+            // Hold the left button through the moves, like a press-and-drag on the touchpad.
+            send(&mut io, &Msg::Click { id: Some(1), button: "left".into(), action: "down".into() }).await?;
+            expect_ack(&mut io, 1).await?;
+            for _ in 0..20 {
+                send(&mut io, &Msg::PointerMove { dx: dx / 20.0, dy: dy / 20.0 }).await?;
+                tokio::time::sleep(Duration::from_millis(30)).await;
+            }
+            send(&mut io, &Msg::Click { id: Some(2), button: "left".into(), action: "up".into() }).await?;
+            expect_ack(&mut io, 2).await?;
+            finish(&mut io).await
+        }
         Some("scroll") => {
             let dy: f64 = args.get(1).context("usage: caw-fake-phone scroll <dy>")?.parse()?;
             let mut io = session(&identity).await?;
@@ -261,6 +276,6 @@ async fn main() -> Result<()> {
             }
             finish(&mut io).await
         }
-        _ => bail!("usage: caw-fake-phone pair <link> | send <text> | key <name> [count] | combo <combo> [count] | move <dx> <dy> | click [left|right|middle] | scroll <dy> | settings | set-speed <n> | set-fixes '<json>' | set-shortcuts '<json>' | stay <seconds>"),
+        _ => bail!("usage: caw-fake-phone pair <link> | send <text> | key <name> [count] | combo <combo> [count] | move <dx> <dy> | click [left|right|middle] | drag <dx> <dy> | scroll <dy> | settings | set-speed <n> | set-fixes '<json>' | set-shortcuts '<json>' | stay <seconds>"),
     }
 }
