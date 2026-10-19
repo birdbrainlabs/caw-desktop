@@ -41,6 +41,14 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-uti
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
 tokio-util = { version = "0.7", features = ["codec"] }
 urlencoding = "2"
+# Text clean-up after speech recognition (dictation); pure Rust.
+fancy-regex = "0.19"
+unicode-normalization = "0.1"
+
+[features]
+# Hold-to-talk dictation on this computer (Linux for now): `caw-desktop dictate`
+# and `caw-desktop talk`. Speech recognition runs locally (Moonshine via sherpa-onnx).
+dictation = ["dep:sherpa-onnx", "dep:cpal"]
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
@@ -53,6 +61,10 @@ wayland-protocols-misc = { version = "0.3", features = ["client"] }
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 libc = "0.2"
 xkbcommon-dl = "0.4"
+# Dictation only (feature "dictation"). sherpa-onnx links its static libraries,
+# which its build script fetches once from the sherpa-onnx GitHub releases.
+sherpa-onnx = { version = "=1.13.8", optional = true }
+cpal = { version = "0.16", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
