@@ -510,7 +510,7 @@ async fn cli(args: Vec<String>) -> Result<()> {
             Some(other) => bail!("unknown option {other:?}; usage: caw-desktop dictate [--file x.wav [--live] [--type]]"),
         },
         #[cfg(all(target_os = "linux", feature = "dictation"))]
-        Some("talk") => dictate::talk(config_dir()?, args.get(1).map(String::as_str)).await,
+        Some("talk") => dictate::talk(config_dir()?, &args[1..]).await,
         #[cfg(not(all(target_os = "linux", feature = "dictation")))]
         Some("dictate" | "talk") => bail!("this build of Caw Desktop has no dictation (it needs Linux and the \"dictation\" feature)"),
         Some("unpair") => {
@@ -546,7 +546,7 @@ async fn cli(args: Vec<String>) -> Result<()> {
                 println!("caw-desktop dictate --file x.wav [--live] [--type]  transcribe a WAV file, with timings");
                 println!("caw-desktop talk start|stop|toggle  start or stop recording (bind to a key's press and release)");
                 println!("caw-desktop talk status   is it recording?");
-                println!("caw-desktop talk bindings the Hyprland lines for the talk key");
+                println!("caw-desktop talk bindings [key]  the Hyprland lines for the talk key (or e.g. Alt_R, XF86Fn)");
             }
             Ok(())
         }

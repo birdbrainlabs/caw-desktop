@@ -5,3 +5,4 @@ pub mod cleaner;
 pub mod filter;
 pub mod segmenter;
 pub mod text;
+pub mod wordfix;

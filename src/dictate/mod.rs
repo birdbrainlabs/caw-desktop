@@ -15,7 +15,7 @@ mod recognizer;
 
 use crate::{fixes, typer};
 use anyhow::{bail, Context, Result};
-use caw_desktop::speech::{cleaner, filter::HighPass, segmenter};
+use caw_desktop::speech::{cleaner, filter::HighPass, segmenter, wordfix};
 use recognizer::{Moonshine, Segmented, Timing, SAMPLE_RATE};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -77,6 +77,34 @@ fn socket_path() -> PathBuf {
     }
 }
 
+/// The word fixes for one hold, read fresh so edits apply at once: first the
+/// personal list (word-fixes.personal.json, in the Caw for Mac / Android
+/// document format), then the phone-managed word-fixes.json ({heard: fixed}).
+/// That is the order a phone dictation gets them: the phone applies its own
+/// list, then this computer applies word-fixes.json to the text it receives.
+fn word_fixes(config_dir: &Path) -> impl Fn(&str) -> String {
+    let path = config_dir.join("word-fixes.personal.json");
+    let personal = match std::fs::read_to_string(&path) {
+        Ok(json) => match wordfix::parse(&json) {
+            Ok(list) => {
+                let compiled = wordfix::WordFixes::new(list);
+                if !compiled.invalid.is_empty() {
+                    log(format!("{}: skipped {} fix(es) that could not be read", path.display(), compiled.invalid.len()));
+                }
+                compiled
+            }
+            Err(e) => {
+                log(format!("{} could not be read ({e}); dictating without it", path.display()));
+                notify(&format!("Your word fixes could not be read ({e}). Dictating without them."));
+                wordfix::WordFixes::default()
+            }
+        },
+        Err(_) => wordfix::WordFixes::default(),
+    };
+    let flat = fixes::load(&config_dir.join("word-fixes.json"));
+    move |text: &str| fixes::apply(&personal.apply(text), &flat)
+}
+
 fn threads() -> i32 {
     std::env::var("CAW_SPEECH_THREADS").ok().and_then(|s| s.parse().ok()).filter(|&n| n > 0).unwrap_or(2)
 }
@@ -85,6 +113,7 @@ fn threads() -> i32 {
 fn hyprland_key(talk_key: &str) -> (String, &'static str) {
     match talk_key.trim().to_lowercase().as_str() {
         "ctrl_r" | "right_ctrl" => ("Control_R".into(), "CTRL"),
+        "control_r" => ("Control_R".into(), "CTRL"),
         "alt_r" | "right_alt" | "right_option" => ("Alt_R".into(), "ALT"),
         "super_r" | "right_super" => ("Super_R".into(), "SUPER"),
         _ => (talk_key.trim().to_string(), ""),
@@ -302,8 +331,8 @@ impl Daemon {
     }
 
     async fn deliver(&self, heard: Heard) {
-        let fixes = fixes::load(&self.config_dir.join("word-fixes.json"));
-        let text = cleaner::clean(&heard.raw, |t| fixes::apply(t, &fixes));
+        let fix = word_fixes(&self.config_dir);
+        let text = cleaner::clean(&heard.raw, fix);
         if let Some(why) = &heard.error {
             return self.unsent(&heard, &text, why);
         }
@@ -376,6 +405,9 @@ fn log(msg: impl AsRef<str>) {
 
 /// A desktop notification, for errors only. Quietly does nothing without notify-send.
 fn notify(msg: &str) {
+    if cfg!(test) {
+        return;
+    }
     let _ = std::process::Command::new("notify-send")
         .args(["--app-name=Caw", "--icon=audio-input-microphone", "Caw dictation", msg])
         .stdin(std::process::Stdio::null())
@@ -449,15 +481,15 @@ pub async fn run(config_dir: PathBuf) -> Result<()> {
     Ok(())
 }
 
-/// `caw-desktop talk start|stop|toggle|status|bindings`.
-pub async fn talk(config_dir: PathBuf, command: Option<&str>) -> Result<()> {
-    let command = match command {
+/// `caw-desktop talk start|stop|toggle|status|bindings [key]`.
+pub async fn talk(config_dir: PathBuf, args: &[String]) -> Result<()> {
+    let command = match args.first().map(String::as_str) {
         Some(c @ ("start" | "stop" | "toggle" | "status")) => c,
         Some("bindings") => {
-            print_bindings(&config_dir);
+            print_bindings(&config_dir, args.get(1).map(String::as_str));
             return Ok(());
         }
-        _ => bail!("usage: caw-desktop talk start|stop|toggle|status|bindings"),
+        _ => bail!("usage: caw-desktop talk start|stop|toggle|status|bindings [key]"),
     };
     let mut stream = match UnixStream::connect(socket_path()).await {
         Ok(s) => s,
@@ -481,11 +513,13 @@ pub async fn talk(config_dir: PathBuf, command: Option<&str>) -> Result<()> {
     }
 }
 
-fn print_bindings(config_dir: &Path) {
-    let settings = Settings::load(config_dir);
-    let (key, release_mod) = hyprland_key(&settings.talk_key);
+/// Hyprland lines for `key` (a Hyprland key name such as Alt_R or XF86Fn, or
+/// code:<n>), else for the talk key setting: press starts, release stops.
+fn print_bindings(config_dir: &Path, key: Option<&str>) {
+    let talk_key = key.map(String::from).unwrap_or_else(|| Settings::load(config_dir).talk_key);
+    let (key, release_mod) = hyprland_key(&talk_key);
     let exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "caw-desktop".into());
-    println!("# Caw hold-to-talk ({}). Hyprland: add to your bindings file.", settings.talk_key);
+    println!("# Caw hold-to-talk ({talk_key}). Hyprland: add to your bindings file.");
     println!("bind = , {key}, exec, {exe} talk start");
     println!("bindr = {release_mod}, {key}, exec, {exe} talk stop");
     if !release_mod.is_empty() {
@@ -525,8 +559,8 @@ pub async fn transcribe_file(config_dir: PathBuf, path: &Path, live: bool, type_
     let after_release_ms = released.elapsed().as_millis();
     let total_ms = fed_at.elapsed().as_millis();
 
-    let fixes = fixes::load(&config_dir.join("word-fixes.json"));
-    let text = cleaner::clean(&heard.raw, |t| fixes::apply(t, &fixes));
+    let fix = word_fixes(&config_dir);
+    let text = cleaner::clean(&heard.raw, fix);
     println!("audio: {secs:.1} s, {} segment(s), loudest 100 ms {:.3}", heard.timings.len(), heard.loudest);
     for (i, t) in heard.timings.iter().enumerate() {
         println!("  segment {}: {:.1} s of audio decoded in {} ms", i + 1, t.audio_secs, t.decode_ms);
@@ -560,6 +594,23 @@ mod tests {
         assert_eq!(hyprland_key("ctrl_r"), ("Control_R".into(), "CTRL"));
         assert_eq!(hyprland_key("alt_r"), ("Alt_R".into(), "ALT"));
         assert_eq!(hyprland_key("code:472"), ("code:472".into(), ""));
+        assert_eq!(hyprland_key("Alt_R"), ("Alt_R".into(), "ALT"));
+        assert_eq!(hyprland_key("Control_R"), ("Control_R".into(), "CTRL"));
+        assert_eq!(hyprland_key("XF86Fn"), ("XF86Fn".into(), ""));
+    }
+
+    #[test]
+    fn personal_fixes_run_before_the_phone_list() {
+        let dir = std::env::temp_dir().join(format!("caw-fixes-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("word-fixes.personal.json"), r#"{"version":1,"fixes":[{"from":"akme|ackme","to":"acme","capitalization":"always"}]}"#).unwrap();
+        std::fs::write(dir.join("word-fixes.json"), r#"{"acme": "ACME Inc"}"#).unwrap();
+        let fix = word_fixes(&dir);
+        assert_eq!(fix("ask akme now"), "ask ACME Inc now");
+        std::fs::write(dir.join("word-fixes.personal.json"), "not json").unwrap();
+        assert_eq!(word_fixes(&dir)("ask akme now"), "ask akme now");
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(word_fixes(&dir)("ask akme now"), "ask akme now");
     }
 
     #[test]
