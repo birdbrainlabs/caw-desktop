@@ -2,7 +2,7 @@
 //! Terminal = Super+Enter. Stored in ~/.config/caw-desktop/shortcuts.json and
 //! re-read whenever the phone asks, so `caw-desktop shortcuts` edits reach the
 //! phone the next time it connects. None by default: Super+Enter opens a
-//! terminal on Omarchy but starts Narrator on Windows.
+//! terminal on some Linux desktops but starts Narrator on Windows.
 
 use crate::typer;
 use anyhow::{anyhow, bail, Result};

@@ -12,8 +12,8 @@ Caw Desktop is part of the Caw family, with
 
 > **Status: early.** Used daily on Hyprland. Also works on GNOME, KDE Plasma,
 > X11 desktops (Cinnamon, XFCE, MATE) and Windows 10 and 11; those are tested
-> automatically but not yet by people, so please report how it goes. The Mac
-> version is new in 0.4.
+> automatically but not yet by people, so please report how it goes. On a Mac,
+> the receiver comes built into Caw for Mac.
 
 ## How it works
 
@@ -24,37 +24,12 @@ Caw Desktop is part of the Caw family, with
 The connection is encrypted, and only phones you have paired can connect.
 See [Security](#security) and [PROTOCOL.md](PROTOCOL.md).
 
-## Install (Mac)
+## Mac
 
-Needs macOS 13 Ventura or newer, on Apple silicon or Intel.
-
-1. Download [caw-desktop-macos.zip](https://github.com/birdbrainlabs/caw-desktop/releases/latest/download/caw-desktop-macos.zip)
-   from the [latest release](https://github.com/birdbrainlabs/caw-desktop/releases/latest)
-   and double-click it to unzip it.
-2. Move **Caw Desktop** into your **Applications** folder and open it. It has
-   no window: it lives in the menu bar as a small keyboard icon.
-3. macOS asks to let Caw Desktop control your computer. Click **Open System
-   Settings** and turn on **Caw Desktop** under **Privacy & Security →
-   Accessibility**. Until you do, the menu shows a reminder that opens that
-   page, and nothing is typed.
-4. When macOS asks whether Caw Desktop may find devices on your local network,
-   click **Allow**, so the phone can reach it.
-5. Click the keyboard icon in the menu bar, choose **Pair phone…**, and scan the
-   QR code that opens in your web browser with Caw.
-
-Caw Desktop starts by itself when you log in; untick **Start at login** in its
-menu to stop that. The menu also shows which phone is connected. In shortcuts,
-**Super** is the **Command** key.
-
-[Caw for Mac](https://github.com/birdbrainlabs/caw), the dictation app you use
-by holding Fn, has this receiver built in: choose **Pair a phone…** in its menu.
-If you use Caw for Mac, you don't need Caw Desktop.app; quit it and remove it
-from Login Items. Only one of the two can receive at a time (they share port
-47820, and the phones paired with either).
-
-The commands under [Use](#use) work in Terminal too:
-`"/Applications/Caw Desktop.app/Contents/MacOS/caw-desktop" devices`, and so on.
-On a Mac the settings live in `~/Library/Application Support/caw-desktop/`.
+Mac users get the receiver inside [Caw for Mac](https://github.com/birdbrainlabs/caw/releases),
+the dictation app you use by holding Fn: choose **Pair a phone…** in Crumb's
+menu and scan the QR code with Caw. There's no separate Caw Desktop download
+for the Mac. In shortcuts, **Super** is the **Command** key.
 
 ## Install (Windows)
 

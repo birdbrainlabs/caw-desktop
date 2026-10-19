@@ -30,7 +30,7 @@ Each side has a long-lived EC P-256 key pair and a self-signed X.509 certificate
 3. Let `K = UTF-8 bytes of the normalized code`, `D = desktop cert fingerprint`, `P = phone cert fingerprint` (each 32 raw bytes, taken from the TLS session).
 4. Phone sends:
    ```json
-   {"type":"pair_request","v":1,"device_id":"…","device_name":"Pixel 8","proof":"<base64 HMAC-SHA256(K, \"caw-pair-phone\" || D || P)>"}
+   {"type":"pair_request","v":1,"device_id":"…","device_name":"My Phone","proof":"<base64 HMAC-SHA256(K, \"caw-pair-phone\" || D || P)>"}
    ```
 5. Desktop checks the proof (constant-time compare). If it's valid, it stores the phone's fingerprint + name as trusted and replies:
    ```json
