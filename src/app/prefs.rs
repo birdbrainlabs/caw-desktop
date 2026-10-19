@@ -13,7 +13,7 @@ pub struct Prefs {
     /// "Show Crumb": the floating Crumb you can click to talk.
     pub show_crumb: bool,
     /// Where Crumb was dragged to: his centre as a fraction of the screen's
-    /// width and height (as Caw for Mac stores it). None: bottom centre.
+    /// width and height (as Caw for Mac stores it). None: bottom right.
     pub crumb_at: Option<(f64, f64)>,
 }
 

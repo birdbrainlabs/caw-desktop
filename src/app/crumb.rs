@@ -25,7 +25,9 @@ const CRUMB_DIAMETER: f64 = 72.0;
 const PADDING: i32 = 4;
 /// The warning pill, as on the Mac.
 const MESSAGE_SIZE: (i32, i32) = (380, 58);
+/// Caw for Mac's insets: 4 from the bottom, 8 from the right edge.
 const BOTTOM_INSET: i32 = 4;
+const EDGE_INSET: i32 = 8;
 const DRAG_THRESHOLD: f64 = 4.0;
 /// How long a warning stays unless clicked away.
 const MESSAGE_FOR: Duration = Duration::from_secs(8);
@@ -297,13 +299,13 @@ impl Crumb {
         (((left as f64 + half) / w as f64).clamp(0.0, 1.0), ((bottom as f64 + half) / h as f64).clamp(0.0, 1.0))
     }
 
-    /// Back to the stored place (bottom centre if none), for the current size.
+    /// Back to the stored place (bottom right if none, as on the Mac), for the current size.
     fn home(&self) {
         let (w, h) = self.screen();
         let side = self.side();
         let at = match self.anchor.get() {
             Some((x, y)) => ((x * w as f64) as i32 - side / 2, (y * h as f64) as i32 - side / 2),
-            None => ((w - side) / 2, BOTTOM_INSET),
+            None => (w - side - EDGE_INSET, BOTTOM_INSET),
         };
         self.at.set(self.clamp(at.0, at.1));
     }
