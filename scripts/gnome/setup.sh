@@ -22,6 +22,22 @@ dpkg-query -W -f='${Package} ${Version}\n' gnome-shell mutter xdg-desktop-portal
 ls /usr/share/gnome-shell/extensions/
 id tester >/dev/null 2>&1 || useradd -m -u 1500 -s /bin/bash tester
 mkdir -p /run/user/1500 && chown tester:tester /run/user/1500 && chmod 700 /run/user/1500
-# Xwayland's socket folder, and a system bus (GNOME Shell 50 won't start without one; there is no logind).
+# Xwayland's socket folder; a system bus with a stand-in logind (GNOME Shell
+# won't start without one, and a container has neither).
 mkdir -p /tmp/.X11-unix && chmod 1777 /tmp/.X11-unix
-mkdir -p /run/dbus && { [ -S /run/dbus/system_bus_socket ] || dbus-daemon --system --fork; }
+here=$(cd "$(dirname "$0")" && pwd)
+mkdir -p /etc/dbus-1/system.d /run/dbus
+cat >/etc/dbus-1/system.d/caw-test-logind.conf <<'CONF'
+<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-BUS Bus Configuration 1.0//EN" "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+  <policy user="root"><allow own="org.freedesktop.login1"/></policy>
+  <policy context="default">
+    <allow send_destination="org.freedesktop.login1"/>
+    <allow receive_sender="org.freedesktop.login1"/>
+  </policy>
+</busconfig>
+CONF
+[ -S /run/dbus/system_bus_socket ] || dbus-daemon --system --fork
+python3 "$here/fake-logind.py" 1500 tester >/tmp/fake-logind.log 2>&1 &
+sleep 1
+cat /tmp/fake-logind.log

@@ -8,7 +8,7 @@ set -uo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 export LOGS=${LOGS:-/tmp/gnome-logs}
 mkdir -p "$LOGS"
-export XDG_CURRENT_DESKTOP=ubuntu:GNOME XDG_SESSION_TYPE=wayland XDG_SESSION_DESKTOP=ubuntu
+export XDG_SESSION_ID=c1 XDG_CURRENT_DESKTOP=ubuntu:GNOME XDG_SESSION_TYPE=wayland XDG_SESSION_DESKTOP=ubuntu
 export GSETTINGS_BACKEND=dconf NO_AT_BRIDGE=0 GTK_A11Y=atspi
 
 ext=$HOME/.local/share/gnome-shell/extensions/caw-test@birdbrainlabs.dev
