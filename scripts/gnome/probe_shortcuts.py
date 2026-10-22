@@ -64,6 +64,7 @@ except GLib.Error as e:
     sys.exit(0)
 
 resp = req.wait(6)
+from gnometest import calm_shell
 if resp is None:
     log("BindShortcuts: no answer after 6 s; windows now:", windows())
     log("---- accessibility tree ----")
@@ -80,7 +81,10 @@ if resp is None:
                 break
             log("still no answer; tree now:")
             dump_accessibles()
+if resp is None:
+    resp = req.wait(10)
 log("BindShortcuts response:", resp)
+log("shell:", calm_shell(), windows())
 
 req = Request()
 try:
@@ -96,7 +100,7 @@ plan = {
     "LOGO+F9": [["Super_L", "F9"]],
     "F9": [["F9"]],
 }
-for trig in triggers:
+for trig in triggers + ["CTRL+ALT+k"]:
     for keys in plan.get(trig, []):
         log(f"pressing {'+'.join(keys)} for 1 s")
         before = len(signals)

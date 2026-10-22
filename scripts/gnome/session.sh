@@ -18,6 +18,8 @@ tray=$(ls /usr/share/gnome-shell/extensions | grep -i appindicator | head -1)
 gsettings set org.gnome.shell disable-user-extensions false
 gsettings set org.gnome.shell enabled-extensions "['$tray', 'caw-test@birdbrainlabs.dev']"
 gsettings set org.gnome.desktop.interface toolkit-accessibility true
+# No "Welcome to Ubuntu" tour dialog: it is modal and holds every shortcut.
+gsettings set org.gnome.shell welcome-dialog-last-shown-version '9999' || true
 echo "tray extension: $tray"
 
 # What the shell and anything D-Bus starts for it see (the shell itself must not have WAYLAND_DISPLAY).

@@ -74,6 +74,11 @@ def screenshot(path, x=0, y=0, w=1280, h=800):
         return (False, e.message)
 
 
+def calm_shell():
+    """Out of the overview, so the desktop's shortcuts work as on a normal desktop."""
+    return shell_eval("Main.overview.hide(); Main.actionMode")
+
+
 def windows():
     ok, out = shell_eval("JSON.stringify(global.get_window_actors().map(a => [a.meta_window.get_title(), a.meta_window.get_wm_class(), a.meta_window.has_focus()]))")
     return out
@@ -102,7 +107,6 @@ class Request:
             pump(0.2)
             if while_waiting:
                 while_waiting()
-        self.bus.signal_unsubscribe(self.sub)
         return self.response
 
 
@@ -115,8 +119,8 @@ def atspi():
     return Atspi
 
 
-def dump_accessibles(max_depth=14, out=sys.stdout):
-    """Every application's windows, as role 'name' lines."""
+def dump_accessibles(max_depth=14, out=sys.stdout, skip=("gnome-shell",)):
+    """Every application's windows (but the shell's own), as role 'name' lines."""
     Atspi = atspi()
     desktop = Atspi.get_desktop(0)
 
@@ -148,7 +152,11 @@ def dump_accessibles(max_depth=14, out=sys.stdout):
             print("  " * depth + f"(gone: {e})", file=out)
 
     for i in range(desktop.get_child_count()):
-        walk(desktop.get_child_at_index(i), 0)
+        app = desktop.get_child_at_index(i)
+        if app is not None and app.get_name() in skip:
+            print(f"application {app.get_name()!r} (skipped)", file=out)
+            continue
+        walk(app, 0)
     out.flush()
 
 
