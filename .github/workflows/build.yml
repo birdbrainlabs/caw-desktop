@@ -118,6 +118,43 @@ jobs:
         with:
           files: caw-desktop-app-linux-x86_64.deb
 
+  # The app .deb on a headless GNOME desktop in Ubuntu containers: apt install
+  # (as an upgrade from the 0.3.0 receiver package, with a phone paired), then
+  # the app's start, tray icon, talk key (GlobalShortcuts portal), dictation and
+  # typing. See scripts/gnome/test.sh.
+  gnome:
+    needs: [linux, app]
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["ubuntu:24.04", "ubuntu:26.04"]
+    runs-on: ubuntu-24.04
+    container:
+      image: ${{ matrix.image }}
+      options: --shm-size=1g
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: caw-desktop-app-linux-x86_64
+          path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: caw-desktop-linux-x86_64
+          path: dist
+      - name: Test on GNOME
+        timeout-minutes: 25
+        run: scripts/gnome/test.sh dist
+      - name: Logs
+        if: always()
+        run: for f in /tmp/gnome-logs/*.log; do [ -f "$f" ] || continue; echo "::group::$f"; cat "$f"; echo "::endgroup::"; done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gnome-test-${{ strategy.job-index }}
+          path: /tmp/gnome-logs/
+          if-no-files-found: ignore
+
   windows:
     runs-on: windows-latest
     defaults:
