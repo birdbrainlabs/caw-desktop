@@ -1,0 +1,37 @@
+name: GNOME probe
+on:
+  push:
+    branches: [gnome-probe]
+  workflow_dispatch:
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["ubuntu:24.04", "ubuntu:26.04"]
+    runs-on: ubuntu-24.04
+    container:
+      image: ${{ matrix.image }}
+      options: --shm-size=1g
+    steps:
+      - uses: actions/checkout@v4
+      - name: Packages
+        run: |
+          apt-get update -qq
+          apt-cache policy libgtk4-layer-shell-dev libgtk4-layer-shell0 libwebkitgtk-6.0-4 libgtk-4-dev libasound2-dev | grep -E '^[a-z]|Candidate'
+      - name: Set up GNOME
+        run: scripts/gnome/setup.sh
+      - name: Probe
+        timeout-minutes: 15
+        run: |
+          chmod -R a+rX "$GITHUB_WORKSPACE"
+          mkdir -p /tmp/gnome-logs && chmod 777 /tmp/gnome-logs
+          runuser -u tester -- env HOME=/home/tester XDG_RUNTIME_DIR=/run/user/1500 dbus-run-session -- "$GITHUB_WORKSPACE/scripts/gnome/session.sh" "$GITHUB_WORKSPACE/scripts/gnome/probe.sh"
+      - name: Speech model
+        run: |
+          cd /tmp && curl -sSfL -o m.tar.bz2 https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-moonshine-base-en-int8.tar.bz2
+          sha256sum m.tar.bz2; ls -l m.tar.bz2
+          tar -tjvf m.tar.bz2
+          tar -xjf m.tar.bz2
+          for f in $(find sherpa-onnx-moonshine-base-en-int8 -iname '*readme*' -o -iname '*licen*'); do echo "== $f"; cat "$f"; done
+          cat sherpa-onnx-moonshine-base-en-int8/test_wavs/*.txt 2>/dev/null || true

@@ -1,0 +1,6 @@
+{
+  "uuid": "caw-test@birdbrainlabs.dev",
+  "name": "Caw test helper",
+  "description": "For Caw's automatic tests only: turns on the shell's unsafe mode so the test can press keys and take screenshots.",
+  "shell-version": ["45", "46", "47", "48", "49", "50", "51", "52"]
+}
