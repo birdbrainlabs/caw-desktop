@@ -20,6 +20,9 @@ gsettings set org.gnome.shell enabled-extensions "['$tray', 'caw-test@birdbrainl
 gsettings set org.gnome.desktop.interface toolkit-accessibility true
 echo "tray extension: $tray"
 
+# What the shell and anything D-Bus starts for it see (the shell itself must not have WAYLAND_DISPLAY).
+dbus-update-activation-environment WAYLAND_DISPLAY=wayland-0 DISPLAY=:0 XDG_CURRENT_DESKTOP XDG_SESSION_TYPE XDG_SESSION_DESKTOP GTK_A11Y XDG_RUNTIME_DIR 2>/dev/null || true
+
 pipewire >"$LOGS/pipewire.log" 2>&1 &
 sleep 0.5
 wireplumber >"$LOGS/wireplumber.log" 2>&1 &
@@ -34,14 +37,19 @@ done
 if ! [ -S "$XDG_RUNTIME_DIR/wayland-0" ]; then
   echo "GNOME Shell did not start"; cat "$LOGS/gnome-shell.log"; exit 1
 fi
-export WAYLAND_DISPLAY=wayland-0
-dbus-update-activation-environment WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE XDG_SESSION_DESKTOP GTK_A11Y 2>/dev/null || true
+export WAYLAND_DISPLAY=wayland-0 DISPLAY=:0
 # The shell is up once it answers on D-Bus.
 for _ in $(seq 60); do
   gdbus call --session -d org.gnome.Shell -o /org/gnome/Shell -m org.freedesktop.DBus.Properties.Get org.gnome.Shell ShellVersion >/dev/null 2>&1 && break
   sleep 0.5
 done
+if ! kill -0 $shell 2>/dev/null; then
+  echo "GNOME Shell stopped"; cat "$LOGS/gnome-shell.log"; exit 1
+fi
 sleep 3
+# Portals the shell started before it was ready can't show dialogs: start them afresh.
+pkill -u "$(id -u)" -f 'libexec/xdg-desktop-portal' 2>/dev/null
+sleep 0.5
 /usr/libexec/xdg-desktop-portal-gnome >"$LOGS/portal-gnome.log" 2>&1 &
 sleep 1
 /usr/libexec/xdg-desktop-portal -v >"$LOGS/portal.log" 2>&1 &

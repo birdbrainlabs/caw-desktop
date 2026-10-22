@@ -22,3 +22,6 @@ dpkg-query -W -f='${Package} ${Version}\n' gnome-shell mutter xdg-desktop-portal
 ls /usr/share/gnome-shell/extensions/
 id tester >/dev/null 2>&1 || useradd -m -u 1500 -s /bin/bash tester
 mkdir -p /run/user/1500 && chown tester:tester /run/user/1500 && chmod 700 /run/user/1500
+# Xwayland's socket folder, and a system bus (GNOME Shell 50 won't start without one; there is no logind).
+mkdir -p /tmp/.X11-unix && chmod 1777 /tmp/.X11-unix
+mkdir -p /run/dbus && { [ -S /run/dbus/system_bus_socket ] || dbus-daemon --system --fork; }
