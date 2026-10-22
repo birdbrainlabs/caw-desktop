@@ -10,7 +10,7 @@
 //! If transcription or typing fails, the recording and any text are saved in
 //! ~/.local/share/caw-desktop/unsent/; otherwise no recording is kept.
 
-#![cfg_attr(not(feature = "app"), allow(dead_code))]
+#![cfg_attr(not(feature = "app-base"), allow(dead_code))]
 
 mod audio;
 pub mod binding;
@@ -49,7 +49,8 @@ pub struct Settings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub talk_key: Option<String>,
     /// The folder with the Moonshine model files. Default:
-    /// ~/.local/share/caw-desktop/models/moonshine-base-en. CAW_MODEL_DIR overrides it.
+    /// ~/.local/share/caw-desktop/models/moonshine-base-en if it is there, else
+    /// the one the .deb installs (PACKAGED_MODEL). CAW_MODEL_DIR overrides it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model_dir: Option<PathBuf>,
 }
@@ -65,7 +66,7 @@ impl Settings {
         std::fs::read(config_dir.join("dictation.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
     }
 
-    #[cfg_attr(not(feature = "app"), allow(dead_code))]
+    #[cfg_attr(not(feature = "app-base"), allow(dead_code))]
     pub fn save(&self, config_dir: &Path) -> Result<()> {
         crate::fsutil::write_private(&config_dir.join("dictation.json"), &serde_json::to_vec_pretty(self)?)
     }
@@ -78,9 +79,19 @@ impl Settings {
         if let Some(dir) = std::env::var_os("CAW_MODEL_DIR") {
             return dir.into();
         }
-        self.model_dir.clone().unwrap_or_else(|| data_dir().join("models").join("moonshine-base-en"))
+        if let Some(dir) = &self.model_dir {
+            return dir.clone();
+        }
+        let own = data_dir().join("models").join("moonshine-base-en");
+        if !own.is_dir() && Path::new(PACKAGED_MODEL).is_dir() {
+            return PACKAGED_MODEL.into();
+        }
+        own
     }
 }
+
+/// Where the .deb puts the speech model (it ships inside the package; Caw never downloads it).
+pub const PACKAGED_MODEL: &str = "/usr/share/caw-desktop/models/moonshine-base-en";
 
 fn data_dir() -> PathBuf {
     dirs::data_dir().unwrap_or_else(std::env::temp_dir).join("caw-desktop")
@@ -499,7 +510,7 @@ fn log(msg: impl AsRef<str>) {
 static QUIET: AtomicBool = AtomicBool::new(false);
 
 /// The app shows errors on the floating Crumb instead of as notifications while he is shown.
-#[cfg_attr(not(feature = "app"), allow(dead_code))]
+#[cfg_attr(not(feature = "app-base"), allow(dead_code))]
 pub fn set_quiet(quiet: bool) {
     QUIET.store(quiet, Ordering::Relaxed);
 }

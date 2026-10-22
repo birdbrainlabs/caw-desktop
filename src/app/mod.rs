@@ -13,6 +13,7 @@ mod pair_window;
 pub mod personal;
 mod prefs;
 mod settings_window;
+mod talk_key;
 mod tray;
 mod webkit;
 
@@ -56,6 +57,7 @@ enum Msg {
     ReceiverStopped(String),
     Tray(ksni::Handle<tray::Tray>),
     Command(Command),
+    TalkKey(talk_key::Status),
 }
 
 /// An open pairing code.
@@ -91,9 +93,15 @@ pub struct Ui {
     settings: RefCell<Option<Rc<settings_window::SettingsWindow>>>,
     /// "Hold Fn to talk", from the desktop's key binding.
     talk_hint: RefCell<String>,
+    /// The talk key through the desktop's shortcuts portal (not on Hyprland): what the desktop said.
+    talk_status: RefCell<Option<talk_key::Status>>,
+    /// Asks the portal for another talk key.
+    rebind: RefCell<Option<tokio::sync::mpsc::UnboundedSender<String>>>,
+    msgs: async_channel::Sender<Msg>,
 }
 
-pub fn run(runtime: tokio::runtime::Runtime) -> Result<()> {
+/// `caw-desktop app`; `pair` (from `pair --window`) opens "Pair a phone" once it is up.
+pub fn run(runtime: tokio::runtime::Runtime, pair: bool) -> Result<()> {
     let config_dir = crate::config_dir()?;
     std::fs::create_dir_all(&config_dir)?;
     if gtk::init().is_err() {
@@ -116,10 +124,17 @@ pub fn run(runtime: tokio::runtime::Runtime) -> Result<()> {
             let _ = tx.try_send(Msg::Receiver(event.clone()));
         }));
     }
+    // GNOME's portals want to know which app is asking (for the talk key above
+    // all), and a host app must say so before its first portal call. Hyprland
+    // needs neither, so it is left as it was.
+    if !binding::on_hyprland() {
+        runtime.block_on(register_app());
+    }
     // Once, for both: on GNOME and KDE this may ask for permission.
     let input = runtime.block_on(crate::linux::init(&config_dir));
     log(format!("typing and mouse through {}", input.describe()));
 
+    stop_old_receiver(&runtime);
     // The phone receiver.
     {
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
@@ -173,7 +188,8 @@ pub fn run(runtime: tokio::runtime::Runtime) -> Result<()> {
     {
         let tx = tx.clone();
         let (cmd_tx, cmd_rx) = async_channel::unbounded::<Command>();
-        let tray = tray::Tray { view: tray::View::default(), commands: cmd_tx };
+        let own_icons = gtk::gdk::Display::default().is_some_and(|d| gtk::IconTheme::for_display(&d).has_icon(tray::OWN_ICON));
+        let tray = tray::Tray { view: tray::View::default(), commands: cmd_tx, own_icons };
         runtime.spawn(async move {
             use ksni::TrayMethods;
             match tray.spawn().await {
@@ -209,6 +225,9 @@ pub fn run(runtime: tokio::runtime::Runtime) -> Result<()> {
         pair: RefCell::new(None),
         settings: RefCell::new(None),
         talk_hint: RefCell::new(String::new()),
+        talk_status: RefCell::new(None),
+        rebind: RefCell::new(None),
+        msgs: tx.clone(),
     });
     ui.refresh_talk_hint();
     load_css();
@@ -252,6 +271,10 @@ pub fn run(runtime: tokio::runtime::Runtime) -> Result<()> {
         glib::ControlFlow::Continue
     });
 
+    if pair {
+        let ui = ui.clone();
+        glib::idle_add_local_once(move || pair_window::open(&ui));
+    }
     let _hold = app.hold();
     app.run_with_args::<&str>(&[]);
 
@@ -267,6 +290,51 @@ pub fn run(runtime: tokio::runtime::Runtime) -> Result<()> {
     }
     runtime.shutdown_timeout(Duration::from_millis(500));
     std::process::exit(0);
+}
+
+/// After an upgrade from the receiver-only Caw Desktop, its receiver
+/// (`caw-desktop serve`, started at login) may still be running. The app
+/// receives from phones itself, so that one is asked to stop (SIGTERM). Both
+/// read the same config folder, so paired phones stay paired.
+fn stop_old_receiver(runtime: &tokio::runtime::Runtime) {
+    use std::os::unix::fs::MetadataExt;
+    if runtime.block_on(crate::control::connect()).is_err() {
+        return;
+    }
+    let me = std::process::id();
+    let uid = unsafe { libc::getuid() };
+    let mut stopped = Vec::new();
+    for entry in std::fs::read_dir("/proc").into_iter().flatten().flatten() {
+        let Some(pid) = entry.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) else { continue };
+        if pid == me || entry.metadata().map(|m| m.uid()).ok() != Some(uid) {
+            continue;
+        }
+        let Ok(cmdline) = std::fs::read(entry.path().join("cmdline")) else { continue };
+        let args: Vec<&[u8]> = cmdline.split(|&b| b == 0).filter(|a| !a.is_empty()).collect();
+        let is_receiver = args.len() == 2 && args[1] == b"serve" && args[0].rsplit(|&b| b == b'/').next() == Some(b"caw-desktop");
+        if is_receiver && unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) } == 0 {
+            stopped.push(pid);
+        }
+    }
+    if stopped.is_empty() {
+        return;
+    }
+    log(format!("stopped the receiver that was already running (pid {stopped:?}); this app receives from phones now"));
+    for _ in 0..30 {
+        if runtime.block_on(crate::control::connect()).is_err() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// Tells the portals this process is the app with APP_ID (its .desktop file has that name).
+async fn register_app() {
+    let Ok(id) = ashpd::AppID::try_from(APP_ID) else { return };
+    match ashpd::register_host_app(id).await {
+        Ok(()) => log(format!("known to the desktop's portals as {APP_ID}")),
+        Err(e) => log(format!("couldn't register with the desktop's portals as {APP_ID} ({e}); some may refuse requests")),
+    }
 }
 
 fn load_css() {
@@ -291,7 +359,8 @@ impl Ui {
         match msg {
             Msg::Dictation(event) => self.dictation_event(event),
             Msg::DictationReady(daemon) => {
-                *self.daemon.borrow_mut() = Some(daemon);
+                *self.daemon.borrow_mut() = Some(daemon.clone());
+                self.start_talk_key(daemon);
                 self.update_crumb();
             }
             Msg::DictationStopped(why) => {
@@ -316,6 +385,10 @@ impl Ui {
                 *self.tray_view.borrow_mut() = tray::View::default();
             }
             Msg::Command(command) => self.command(command),
+            Msg::TalkKey(status) => {
+                *self.talk_status.borrow_mut() = Some(status);
+                self.refresh_talk_hint();
+            }
         }
         self.update_tray();
         self.refresh_windows();
@@ -502,9 +575,50 @@ impl Ui {
                 None => "No talk key yet: see Settings".into(),
             }
         } else {
-            "Click Crumb to talk, or bind a key in your desktop's settings".into()
+            match self.talk_status.borrow().as_ref() {
+                Some(talk_key::Status::Bound(name)) => format!("Hold {} to talk", self.talk_key_name(name)),
+                Some(talk_key::Status::Asking) => "Waiting for the desktop to allow the talk key".into(),
+                _ if crumb::supported() => "Click Crumb to talk, or bind a key in your desktop's settings".into(),
+                _ => "No talk key yet: see Settings".into(),
+            }
         };
         *self.talk_hint.borrow_mut() = hint;
+    }
+
+    /// The talk key's name for people: the desktop's, else Caw's ("Right Ctrl").
+    /// The talk key as the desktop describes it (GNOME: "Press Control_R"), in
+    /// Caw's words ("Right Ctrl") when it is the key Caw asked for.
+    fn talk_key_name(&self, from_desktop: &str) -> String {
+        let chosen = dictate::Settings::load(&self.config_dir).talk_key();
+        let said = from_desktop.trim();
+        let said = said.strip_prefix("Press ").unwrap_or(said).trim();
+        if said.is_empty() || said == talk_key::trigger(&chosen) {
+            binding::describe(&chosen)
+        } else {
+            said.to_string()
+        }
+    }
+
+    /// Off Hyprland: the talk key through the desktop's global-shortcuts portal.
+    fn start_talk_key(&self, daemon: Arc<Daemon>) {
+        if binding::on_hyprland() || self.rebind.borrow().is_some() {
+            return;
+        }
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        *self.rebind.borrow_mut() = Some(tx);
+        let key = dictate::Settings::load(&self.config_dir).talk_key();
+        let msgs = self.msgs.clone();
+        self.rt.spawn(talk_key::run(daemon, key, rx, move |status| {
+            let _ = msgs.try_send(Msg::TalkKey(status));
+        }));
+    }
+
+    /// Settings chose another talk key: ask the desktop for it. False on Hyprland (no portal there).
+    pub fn rebind_talk_key(&self, talk_key: &str) -> bool {
+        match self.rebind.borrow().as_ref() {
+            Some(tx) => tx.send(talk_key.to_string()).is_ok(),
+            None => false,
+        }
     }
 
     fn tray_view(&self) -> tray::View {

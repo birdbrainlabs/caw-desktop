@@ -1,7 +1,10 @@
-//! "Settings": the hold-to-talk key (Caw never reads the keyboard; the
-//! desktop's shortcut runs `talk start` and `talk stop`, so on Hyprland this
-//! shows the key bound now and the exact lines to bind one), and the switches.
+//! "Settings": the hold-to-talk key (Caw never reads the keyboard: on
+//! Hyprland the desktop's shortcut runs `talk start` and `talk stop`, so this
+//! shows the key bound now and the exact lines to bind one; on GNOME and KDE
+//! the desktop's shortcuts portal holds the key, and choosing another one here
+//! asks the desktop again), and the switches.
 
+use super::talk_key::Status;
 use super::Ui;
 use crate::dictate::{binding, Settings};
 use gtk::prelude::*;
@@ -14,6 +17,8 @@ pub struct SettingsWindow {
     key: gtk::DropDown,
     instructions: gtk::Label,
     lines: gtk::TextView,
+    lines_frame: gtk::Frame,
+    copy: gtk::Button,
     dictation: gtk::Switch,
     phones: gtk::Switch,
     crumb: gtk::Switch,
@@ -74,7 +79,8 @@ fn build(ui: &Rc<Ui>) -> Rc<SettingsWindow> {
     let instructions = gtk::Label::builder().xalign(0.0).wrap(true).selectable(true).build();
     column.append(&instructions);
     let lines = gtk::TextView::builder().editable(false).monospace(true).wrap_mode(gtk::WrapMode::Char).top_margin(8).bottom_margin(8).left_margin(8).right_margin(8).build();
-    column.append(&gtk::Frame::builder().child(&lines).build());
+    let lines_frame = gtk::Frame::builder().child(&lines).build();
+    column.append(&lines_frame);
     let copy = gtk::Button::builder().label("Copy lines").halign(gtk::Align::End).build();
     column.append(&copy);
 
@@ -89,7 +95,7 @@ fn build(ui: &Rc<Ui>) -> Rc<SettingsWindow> {
     let scroll = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).child(&column).build();
     window.set_child(Some(&scroll));
 
-    let me = Rc::new(SettingsWindow { window, bound, key, instructions, lines, dictation, phones, crumb, crumb_note, updating: Cell::new(false) });
+    let me = Rc::new(SettingsWindow { window, bound, key, instructions, lines, lines_frame, copy, dictation, phones, crumb, crumb_note, updating: Cell::new(false) });
 
     let weak_ui = Rc::downgrade(ui);
     let weak = Rc::downgrade(&me);
@@ -104,10 +110,11 @@ fn build(ui: &Rc<Ui>) -> Rc<SettingsWindow> {
         if let Err(e) = settings.save(&ui.config_dir) {
             super::log(format!("saving dictation.json: {e:#}"));
         }
+        ui.rebind_talk_key(talk_key);
         me.show_key(&ui, Some(talk_key));
     });
     let weak = Rc::downgrade(&me);
-    copy.connect_clicked(move |b| {
+    me.copy.connect_clicked(move |b| {
         let Some(me) = weak.upgrade() else { return };
         let buffer = me.lines.buffer();
         b.clipboard().set_text(&buffer.text(&buffer.start_iter(), &buffer.end_iter(), false));
@@ -143,12 +150,29 @@ impl SettingsWindow {
     /// The bound key, and the lines for `chosen` (else the key bound now, else the setting).
     fn show_key(&self, ui: &Ui, chosen: Option<&str>) {
         let exe = binding::exe();
+        self.show_lines(true);
         if !binding::on_hyprland() {
             let key = chosen.map(String::from).unwrap_or_else(|| Settings::load(&ui.config_dir).talk_key());
-            self.bound.set_text("Caw doesn't read the keyboard itself: your desktop's keyboard shortcut starts and stops talking.");
-            self.instructions.set_text(&format!("Make a shortcut for {} that runs the first command when the key is pressed and the second when it is let go. You can also click Crumb.", binding::describe(&key)));
-            self.lines.buffer().set_text(&format!("{exe} talk start\n{exe} talk stop"));
             self.select(&key);
+            let status = ui.talk_status.borrow().clone();
+            match status {
+                Some(Status::Bound(name)) if chosen.is_none() => {
+                    self.bound.set_text(&format!("Hold {} to talk. Your desktop looks after the key: choose another one here and it asks you again.", ui.talk_key_name(&name)));
+                    self.show_lines(false);
+                    return;
+                }
+                Some(Status::Asking) | Some(Status::Bound(_)) => {
+                    self.bound.set_text(&format!("Your desktop is asking whether Caw may use {}. Answer its window.", binding::describe(&key)));
+                    self.show_lines(false);
+                    return;
+                }
+                Some(Status::Declined) => self.bound.set_text("Your desktop didn't give Caw a talk key. Choose one here to be asked again, or make a shortcut yourself:"),
+                Some(Status::Unavailable(why)) => self.bound.set_text(&format!("Caw can't ask this desktop for a talk key ({why}). Your desktop's keyboard shortcut can start and stop talking instead.")),
+                None => self.bound.set_text("Caw doesn't read the keyboard itself: your desktop's keyboard shortcut starts and stops talking."),
+            }
+            let crumb = if super::crumb::supported() { " You can also click Crumb." } else { "" };
+            self.instructions.set_text(&format!("Make a shortcut for {} that runs the first command when the key is pressed and the second when it is let go.{crumb}", binding::describe(&key)));
+            self.lines.buffer().set_text(&format!("{exe} talk start\n{exe} talk stop"));
             return;
         }
         let dir = binding::hypr_dir();
@@ -176,6 +200,12 @@ impl SettingsWindow {
         self.select(&key);
     }
 
+    fn show_lines(&self, on: bool) {
+        self.instructions.set_visible(on);
+        self.lines_frame.set_visible(on);
+        self.copy.set_visible(on);
+    }
+
     fn select(&self, talk_key: &str) {
         if let Some(i) = binding::CHOICES.iter().position(|(k, _)| k.eq_ignore_ascii_case(talk_key)) {
             self.updating.set(true);
@@ -185,6 +215,9 @@ impl SettingsWindow {
     }
 
     pub fn refresh(&self, ui: &Ui) {
+        if !binding::on_hyprland() {
+            self.show_key(ui, None);
+        }
         self.updating.set(true);
         let prefs = ui.prefs.borrow().clone();
         self.dictation.set_active(prefs.dictation);
@@ -192,7 +225,11 @@ impl SettingsWindow {
         self.crumb.set_active(prefs.show_crumb);
         self.crumb.set_sensitive(super::crumb::supported());
         if !super::crumb::supported() {
-            self.crumb_note.set_text("This desktop can't float Crumb above other windows (it has no layer-shell).");
+            self.crumb_note.set_text(if cfg!(feature = "app") {
+                "This desktop can't float Crumb above other windows (it has no layer-shell)."
+            } else {
+                "This version of Caw can't float Crumb above other windows."
+            });
         }
         self.updating.set(false);
     }

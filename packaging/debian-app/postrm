@@ -1,0 +1,7 @@
+#!/bin/sh
+# The receiver-only package started `caw-desktop serve` at login from
+# /etc/xdg/autostart/caw-desktop.desktop. The app starts at login from its own
+# file (named after its app ID), so the old one goes, unless it was edited.
+set -e
+dpkg-maintscript-helper rm_conffile /etc/xdg/autostart/caw-desktop.desktop 0.4.0-1app~ caw-desktop -- "$@"
+#DEBHELPER#

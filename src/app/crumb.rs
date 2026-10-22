@@ -13,7 +13,7 @@ use super::{log, orb, webkit};
 use crate::dictate::Activity;
 use gtk::prelude::*;
 use gtk::{cairo, gdk, glib};
-use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
+use layer::{Edge, KeyboardMode, Layer, LayerShell};
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -85,10 +85,42 @@ pub struct Crumb {
     shown: Cell<bool>,
 }
 
+#[cfg(feature = "app")]
+mod layer {
+    pub use gtk4_layer_shell::{is_supported, Edge, KeyboardMode, Layer, LayerShell};
+}
+
+/// Built without gtk4-layer-shell (feature "app-base", the Ubuntu .deb): Crumb never floats.
+#[cfg(not(feature = "app"))]
+mod layer {
+    pub enum Edge {
+        Left,
+        Bottom,
+    }
+    pub enum Layer {
+        Overlay,
+    }
+    pub enum KeyboardMode {
+        None,
+    }
+    pub trait LayerShell {
+        fn init_layer_shell(&self) {}
+        fn set_layer(&self, _: Layer) {}
+        fn set_keyboard_mode(&self, _: KeyboardMode) {}
+        fn set_namespace(&self, _: Option<&str>) {}
+        fn set_anchor(&self, _: Edge, _: bool) {}
+        fn set_margin(&self, _: Edge, _: i32) {}
+    }
+    impl LayerShell for gtk::Window {}
+    pub fn is_supported() -> bool {
+        false
+    }
+}
+
 /// Whether this desktop can float Crumb (layer-shell: Hyprland, Sway, KDE; not GNOME).
 pub fn supported() -> bool {
     // Layer-shell is Wayland only (and asks GTK's Wayland display, so check that first).
-    gdk::Display::default().is_some_and(|d| d.type_().name() == "GdkWaylandDisplay") && gtk4_layer_shell::is_supported()
+    gdk::Display::default().is_some_and(|d| d.type_().name() == "GdkWaylandDisplay") && layer::is_supported()
 }
 
 /// Writes his page to a private folder for WebKit (the runtime folder: memory, gone at logout).

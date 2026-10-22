@@ -24,7 +24,7 @@ type Hook = Box<dyn Fn(&Event) + Send + Sync>;
 static HOOK: std::sync::OnceLock<Hook> = std::sync::OnceLock::new();
 
 /// Also hands every event to `hook`, headless or not. Set once.
-#[cfg_attr(not(all(target_os = "linux", feature = "app")), allow(dead_code))]
+#[cfg_attr(not(all(target_os = "linux", feature = "app-base")), allow(dead_code))]
 pub fn set_hook(hook: Hook) {
     let _ = HOOK.set(hook);
 }

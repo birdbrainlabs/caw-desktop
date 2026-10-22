@@ -74,6 +74,50 @@ jobs:
             caw-desktop-linux-x86_64.tar.gz
             caw-desktop-linux-x86_64.deb
 
+  # The full app (dictation, tray, receiver, windows) for Ubuntu 24.04 and newer:
+  # built on 24.04 against its GTK 4, with the speech model packed into the .deb.
+  app:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Libraries
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends libgtk-4-dev libasound2-dev pkg-config >/dev/null
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deb
+      - name: Test
+        run: cargo test --locked --features app-base
+      - name: Build
+        run: cargo build --release --locked --features app-base
+      - name: Speech model
+        run: scripts/fetch-model.sh target/model
+      - name: Transcribe the model's test recordings
+        run: |
+          for wav in target/model/test_wavs/0.wav target/model/test_wavs/1.wav; do
+            CAW_MODEL_DIR=target/model/moonshine-base-en target/release/caw-desktop dictate --file "$wav" | tee /tmp/out.txt
+            grep '^typed:' /tmp/out.txt
+          done
+          cat target/model/test_wavs/trans.txt
+      - name: Package
+        run: |
+          cargo deb --variant app --no-build --locked --output caw-desktop-app-linux-x86_64.deb
+          dpkg-deb -I caw-desktop-app-linux-x86_64.deb
+          dpkg-deb -c caw-desktop-app-linux-x86_64.deb
+          ls -l caw-desktop-app-linux-x86_64.deb
+      - uses: actions/upload-artifact@v4
+        with:
+          name: caw-desktop-app-linux-x86_64
+          path: |
+            caw-desktop-app-linux-x86_64.deb
+            target/model/test_wavs/
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: caw-desktop-app-linux-x86_64.deb
+
   windows:
     runs-on: windows-latest
     defaults:

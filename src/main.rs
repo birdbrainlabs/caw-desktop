@@ -1,7 +1,7 @@
 //! Caw Desktop: receives dictated text from the Caw phone app and types it
 //! into the focused window. Protocol: PROTOCOL.md.
 
-#[cfg(all(target_os = "linux", feature = "app"))]
+#[cfg(all(target_os = "linux", feature = "app-base"))]
 mod app;
 mod cgevent;
 #[cfg(all(target_os = "linux", feature = "dictation"))]
@@ -100,13 +100,13 @@ impl State {
     }
 
     /// Turns "Let phones type on this computer" on or off.
-    #[cfg_attr(not(all(target_os = "linux", feature = "app")), allow(dead_code))]
+    #[cfg_attr(not(all(target_os = "linux", feature = "app-base")), allow(dead_code))]
     fn set_phones(&self, on: bool) {
         self.phones_on.store(on, std::sync::atomic::Ordering::Relaxed);
         self.gate_changed();
     }
 
-    #[cfg_attr(not(all(target_os = "linux", feature = "app")), allow(dead_code))]
+    #[cfg_attr(not(all(target_os = "linux", feature = "app-base")), allow(dead_code))]
     fn set_pair_window(&self, open: bool) {
         self.pair_window_open.store(open, std::sync::atomic::Ordering::Relaxed);
         self.gate_changed();
@@ -373,7 +373,7 @@ mod control {
     }
 
     /// Removes the socket file, for a receiver that is quitting.
-    #[cfg_attr(not(feature = "app"), allow(dead_code))]
+    #[cfg_attr(not(feature = "app-base"), allow(dead_code))]
     pub fn remove() {
         let _ = std::fs::remove_file(path());
     }
@@ -452,10 +452,15 @@ fn main() -> Result<()> {
         std::process::exit(code);
     }
     if args.first().is_some_and(|a| a == "app") {
-        #[cfg(all(target_os = "linux", feature = "app"))]
-        return app::run(runtime);
-        #[cfg(not(all(target_os = "linux", feature = "app")))]
+        #[cfg(all(target_os = "linux", feature = "app-base"))]
+        return app::run(runtime, false);
+        #[cfg(not(all(target_os = "linux", feature = "app-base")))]
         bail!("this build of Caw Desktop has no app (it needs Linux and the \"app\" feature)");
+    }
+    // With the app, "Pair a phone" is its own window (not the browser page): open it there.
+    #[cfg(all(target_os = "linux", feature = "app-base"))]
+    if args.len() == 2 && args[0] == "pair" && args[1] == "--window" {
+        return app::run(runtime, true);
     }
     // Caw Desktop.app opened from Finder or at login: the receiver with a menu bar icon.
     #[cfg(target_os = "macos")]
@@ -582,12 +587,15 @@ async fn cli(args: Vec<String>) -> Result<()> {
             Ok(())
         }
         _ => {
-            #[cfg(all(target_os = "linux", feature = "app"))]
+            #[cfg(all(target_os = "linux", feature = "app-base"))]
             println!("caw-desktop app        the app: receiver, dictation, tray icon and the floating pill");
             println!("caw-desktop            run the receiver (same as `serve`)");
             println!("caw-desktop serve --headless  the receiver for another app: JSON lines on stdin/stdout");
             println!("caw-desktop pair       show a pairing code and QR code for the phone");
+            #[cfg(not(all(target_os = "linux", feature = "app-base")))]
             println!("caw-desktop pair --window  the same, as a page in the web browser");
+            #[cfg(all(target_os = "linux", feature = "app-base"))]
+            println!("caw-desktop pair --window  the same, in the app's Pair a phone window");
             println!("caw-desktop devices    list paired phones");
             println!("caw-desktop unpair ID  forget a phone");
             println!("caw-desktop settings  show mouse settings");

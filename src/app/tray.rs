@@ -1,6 +1,9 @@
-//! The tray icon (StatusNotifierItem): a plain microphone symbol from the icon
-//! theme, filled in while listening (as Caw for Mac's waveform.circle /
-//! waveform.circle.fill). Menus stay flat: some trays can't open submenus.
+//! The tray icon (StatusNotifierItem): Caw's waveform in a ring, a solid disc
+//! while listening (as Caw for Mac's waveform.circle / waveform.circle.fill),
+//! slashed while dictation is off. They are symbolic icons the package
+//! installs (packaging/linux/icons), so the panel colours them to match;
+//! without them (a build run from its folder) it falls back to the icon
+//! theme's microphone. Menus stay flat: some trays can't open submenus.
 
 use super::Command;
 
@@ -19,7 +22,12 @@ pub struct View {
 pub struct Tray {
     pub view: View,
     pub commands: async_channel::Sender<Command>,
+    /// Caw's own icons are installed (in the hicolor theme).
+    pub own_icons: bool,
 }
+
+/// The installed icon looked for at start.
+pub const OWN_ICON: &str = "caw-waveform-symbolic";
 
 impl Tray {
     fn send(&self, command: Command) {
@@ -58,6 +66,16 @@ impl ksni::Tray for Tray {
     }
 
     fn icon_name(&self) -> String {
+        if self.own_icons {
+            return if !self.view.dictation_on {
+                "caw-waveform-off-symbolic"
+            } else if self.view.listening {
+                "caw-waveform-listening-symbolic"
+            } else {
+                OWN_ICON
+            }
+            .into();
+        }
         if !self.view.dictation_on {
             "microphone-disabled-symbolic"
         } else if self.view.listening {

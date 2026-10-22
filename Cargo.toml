@@ -50,15 +50,19 @@ unicode-normalization = "0.1"
 # and `caw-desktop talk`. Speech recognition runs locally (Moonshine via sherpa-onnx).
 dictation = ["dep:sherpa-onnx", "dep:cpal"]
 # The desktop app, `caw-desktop app` (Linux): the receiver and dictation in one
-# process, with a tray icon, a floating pill and GTK 4 windows for word fixes,
+# process, with a tray icon, the floating Crumb and GTK 4 windows for word fixes,
 # pairing and settings. Needs GTK 4 (4.12 or later) and gtk4-layer-shell.
-app = ["dictation", "dep:gtk", "dep:gtk4-layer-shell", "dep:ksni", "dep:async-channel"]
+app = ["app-base", "dep:gtk4-layer-shell"]
+# The same app without gtk4-layer-shell, so without the floating Crumb: the
+# Ubuntu .deb (Ubuntu 24.04 doesn't package gtk4-layer-shell, and GNOME can't
+# float windows anyway).
+app-base = ["dictation", "dep:gtk", "dep:ksni", "dep:async-channel"]
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-ashpd = { version = "0.13", default-features = false, features = ["tokio", "remote_desktop", "screencast"] }
+ashpd = { version = "0.13", default-features = false, features = ["tokio", "remote_desktop", "screencast", "global_shortcuts"] }
 x11rb = { version = "0.13", features = ["xtest"] }
 wayland-client = "0.31"
 wayland-protocols-misc = { version = "0.3", features = ["client"] }
@@ -106,5 +110,36 @@ assets = [
     ["target/release/caw-desktop", "usr/bin/", "755"],
     ["packaging/linux/caw-desktop.desktop", "usr/share/applications/", "644"],
     ["packaging/linux/caw-desktop-autostart.desktop", "etc/xdg/autostart/caw-desktop.desktop", "644"],
+    ["README.md", "usr/share/doc/caw-desktop/", "644"],
+]
+
+# The full app for Ubuntu 24.04 and newer (`cargo deb --variant app`, after
+# `cargo build --release --features app-base` and scripts/fetch-model.sh):
+# dictation, the tray icon, the phone receiver and the windows, with the
+# Moonshine speech model inside (Caw never downloads it). Same package name, so
+# it upgrades the receiver-only package in place and paired phones stay paired;
+# the "app" revision sorts after the receiver-only one of the same version.
+[package.metadata.deb.variants.app]
+name = "caw-desktop"
+revision = "1app"
+depends = "$auto, libwebkitgtk-6.0-4, xdg-desktop-portal"
+recommends = "libnotify-bin, xdg-utils"
+suggests = "wtype"
+extended-description = """\
+Hold a key and talk: Caw types what you said at the cursor, in any window. \
+Speech recognition (Moonshine) runs on this computer and never goes online. \
+The Caw phone app can also type here, move the mouse and press keys, over the \
+local network. A tray icon turns dictation and phones on and off, and opens \
+word fixes, phone pairing and settings."""
+maintainer-scripts = "packaging/debian-app/"
+assets = [
+    ["target/release/caw-desktop", "usr/bin/", "755"],
+    ["packaging/linux/caw-desktop-app.desktop", "usr/share/applications/dev.birdbrainlabs.CawDesktop.desktop", "644"],
+    ["packaging/linux/caw-desktop-app-autostart.desktop", "etc/xdg/autostart/dev.birdbrainlabs.CawDesktop.desktop", "644"],
+    ["packaging/linux/icons/*.svg", "usr/share/icons/hicolor/scalable/status/", "644"],
+    ["target/model/moonshine-base-en/*", "usr/share/caw-desktop/models/moonshine-base-en/", "644"],
+    ["packaging/licenses/*", "usr/share/doc/caw-desktop/licenses/", "644"],
+    ["assets/crumb/THREE-LICENSE.txt", "usr/share/doc/caw-desktop/licenses/", "644"],
+    ["ART-LICENSE.md", "usr/share/doc/caw-desktop/", "644"],
     ["README.md", "usr/share/doc/caw-desktop/", "644"],
 ]
