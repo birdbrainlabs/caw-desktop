@@ -156,6 +156,11 @@ impl SettingsWindow {
             self.select(&key);
             let status = ui.talk_status.borrow().clone();
             match status {
+                Some(Status::Bound(name)) if chosen.is_none() && super::talk_key::press_to_toggle() => {
+                    self.bound.set_text(&format!("Press {} to start talking, and press it again to stop. Your desktop looks after the key: choose another one here and it asks you again.", ui.talk_key_name(&name)));
+                    self.show_lines(false);
+                    return;
+                }
                 Some(Status::Bound(name)) if chosen.is_none() => {
                     self.bound.set_text(&format!("Hold {} to talk. Your desktop looks after the key: choose another one here and it asks you again.", ui.talk_key_name(&name)));
                     self.show_lines(false);
@@ -164,6 +169,13 @@ impl SettingsWindow {
                 Some(Status::Asking) | Some(Status::Bound(_)) => {
                     self.bound.set_text(&format!("Your desktop is asking whether Caw may use {}. Answer its window.", binding::describe(&key)));
                     self.show_lines(false);
+                    return;
+                }
+                // GNOME without a key from Caw: one shortcut of the person's own, press to start, press to stop.
+                _ if super::talk_key::on_gnome() => {
+                    self.bound.set_text("To talk with a key, add one keyboard shortcut in Ubuntu's Settings.");
+                    self.instructions.set_text("Open Settings, then Keyboard, then View and Customize Shortcuts, then Custom Shortcuts. Add a shortcut called Caw, paste the line below as its command, and press the key you want to use. Press that key once to start talking and again to stop.");
+                    self.lines.buffer().set_text(&format!("{exe} talk toggle"));
                     return;
                 }
                 Some(Status::Declined) => self.bound.set_text("Your desktop didn't give Caw a talk key. Choose one here to be asked again, or make a shortcut yourself:"),

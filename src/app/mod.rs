@@ -576,9 +576,11 @@ impl Ui {
             }
         } else {
             match self.talk_status.borrow().as_ref() {
+                Some(talk_key::Status::Bound(name)) if talk_key::press_to_toggle() => format!("Press {} to talk, again to stop", self.talk_key_name(name)),
                 Some(talk_key::Status::Bound(name)) => format!("Hold {} to talk", self.talk_key_name(name)),
                 Some(talk_key::Status::Asking) => "Waiting for the desktop to allow the talk key".into(),
                 _ if crumb::supported() => "Click Crumb to talk, or bind a key in your desktop's settings".into(),
+                _ if talk_key::on_gnome() => "To talk with a key, add a shortcut: see Settings".into(),
                 _ => "No talk key yet: see Settings".into(),
             }
         };

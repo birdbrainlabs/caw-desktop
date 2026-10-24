@@ -346,35 +346,53 @@ pump(0.5)
 
 expected_text = transcript("0.wav")
 by_key = "talk key: the desktop answered" in app_log() or "talk key: Bound" in app_log()
-held = False
-if by_key:
+toggle_mode = "a press starts talking, the next press stops" in app_log()
+result("talk-key-mode", "INFO", "press to start, press again to stop" if toggle_mode else "hold to talk" if by_key else "no key from the desktop: the shortcut the person adds runs `talk toggle`")
+
+
+def tap_talk_key():
     press_with("Control_R", True)
-    held = True
-    if wait_for(lambda: "talk key: pressed" in app_log(), 3):
+    pump(0.15)
+    press_with("Control_R", False)
+
+
+def presses():
+    return app_log().count("talk key: pressed")
+
+
+by_press = False
+if by_key:
+    tap_talk_key()
+    if wait_for(lambda: presses() >= 1, 3):
+        by_press = True
         result("talk-key-press", "PASS", "the desktop told Caw Right Ctrl went down")
     else:
-        result("talk-key-press", "INFO", "Right Ctrl went down, but the desktop sent Caw nothing")
-if not (by_key and "talk key: pressed" in app_log()):
-    # So the rest still gets tested: start as the desktop shortcut would.
-    if held:
-        press_with("Control_R", False)
-        held = False
-    log("talk start:", subprocess.run(["caw-desktop", "talk", "start"], capture_output=True, text=True).stdout.strip())
+        result("talk-key-press", "FAIL", "Right Ctrl went down, but the desktop sent Caw nothing")
+if not by_press:
+    # As the custom shortcut in Ubuntu's Settings would (one command, press to start, press to stop).
+    log("talk toggle:", subprocess.run(["caw-desktop", "talk", "toggle"], capture_output=True, text=True).stdout.strip())
 
 listening = wait_for(lambda: icon_name() != idle_icon and icon_name(), 3)
 listen_icon = icon_name()
 listen_shot = panel_shot("tray-listening")
+if by_press and toggle_mode:
+    # The key is up again: Caw must still be listening.
+    pump(1)
+    result("talk-key-release-ignored", "PASS" if icon_name() == listen_icon and listen_icon != idle_icon else "FAIL", f"icon after the key came up: {icon_name()}")
 secs = mic.play(os.path.join(wavs, "0.wav"))
 time.sleep(secs + 0.8)
-if held:
-    press_with("Control_R", False)
-    if wait_for(lambda: "talk key: released" in app_log(), 3):
-        result("talk-key-release", "PASS", "the desktop told Caw Right Ctrl came up")
-    else:
-        result("talk-key-release", "INFO", "Right Ctrl came up, but the desktop sent Caw nothing; stopping by command")
+if by_press and toggle_mode:
+    tap_talk_key()
+    stopped = wait_for(lambda: presses() >= 2 and icon_name() != listen_icon, 5)
+    result("talk-key-second-press-stops", "PASS" if stopped else "FAIL", f"presses seen: {presses()}; icon now {icon_name()}")
+    if not stopped:
+        subprocess.run(["caw-desktop", "talk", "stop"])
+elif by_press:
+    # A desktop that sends key-ups: hold-to-talk, as before.
+    if not wait_for(lambda: "talk key: released" in app_log(), 3):
         subprocess.run(["caw-desktop", "talk", "stop"])
 else:
-    subprocess.run(["caw-desktop", "talk", "stop"])
+    log("talk toggle:", subprocess.run(["caw-desktop", "talk", "toggle"], capture_output=True, text=True).stdout.strip())
 
 result("tray-icon-while-listening", "PASS" if listen_icon and listen_icon != idle_icon else "FAIL", f"{idle_icon} -> {listen_icon}")
 if idle_shot and listen_shot:
@@ -417,7 +435,21 @@ if ours and "Settings…" in ids:
     call(ours[0], menu_path, "com.canonical.dbusmenu", "Event", GLib.Variant("(isvu)", (ids["Settings…"], "clicked", GLib.Variant("s", ""), 0)))
     shown = wait_for(lambda: "Caw Settings" in windows(), 10)
     wait_for(lambda: texts_in_window("Caw Settings"), 5)
-    result("settings-window", "PASS" if shown else "FAIL", f"it says: {texts_in_window('Caw Settings')}")
+    said = " ".join(texts_in_window("Caw Settings"))
+    want = "press it again to stop" if toggle_mode else "add one keyboard shortcut in Ubuntu's Settings" if not by_key else "to talk"
+    result("settings-window", "PASS" if shown and want in said else "FAIL", f"wanted {want!r}; it says: {texts_in_window('Caw Settings')}")
+    if not by_key:
+        # The command to paste is in a text box, not a label.
+        boxes = [n for n in find_accessibles(lambda n, a: n.get_role_name() == "text" and "caw" in (a or "").lower())]
+        texts = []
+        for b in boxes:
+            try:
+                t = b.get_text_iface()
+                texts.append(t.get_text(0, t.get_character_count()))
+            except Exception:
+                pass
+        ok = any(x.strip().endswith("caw-desktop talk toggle") for x in texts)
+        result("settings-shortcut-command", "PASS" if ok else "FAIL" if any(texts) else "INFO", f"{texts or 'the text box is not readable here'}")
 
 # ---- quit ----
 app.terminate()

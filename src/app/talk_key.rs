@@ -6,6 +6,10 @@
 //!
 //! Everything the desktop answers is logged, since what each desktop allows
 //! (a lone modifier such as Right Ctrl, for one) differs.
+//!
+//! GNOME tells Caw only that the key went down, never that it came up, so
+//! there the key starts talking and the next press stops it
+//! ([`press_to_toggle`]). Other desktops keep hold-to-talk.
 
 use crate::dictate::{binding, Daemon};
 use ashpd::desktop::global_shortcuts::{GlobalShortcuts, NewShortcut};
@@ -27,6 +31,18 @@ pub enum Status {
     Declined,
     /// This desktop can't do it, in words for people.
     Unavailable(String),
+}
+
+/// GNOME (Ubuntu's desktop among them): the talk key is pressed once to
+/// start and again to stop, since GNOME sends no key-up. Hyprland and other
+/// desktops hold it.
+pub fn press_to_toggle() -> bool {
+    !binding::on_hyprland() && on_gnome()
+}
+
+/// GNOME, whatever else XDG_CURRENT_DESKTOP lists ("ubuntu:GNOME").
+pub fn on_gnome() -> bool {
+    std::env::var("XDG_CURRENT_DESKTOP").is_ok_and(|d| d.split(':').any(|p| p.eq_ignore_ascii_case("gnome")))
 }
 
 /// The trigger to suggest for a talk key setting, as the XDG shortcuts
@@ -105,19 +121,34 @@ async fn session(daemon: &Arc<Daemon>, talk_key: &str, rebind: &mut UnboundedRec
         return Err(Status::Declined);
     };
     report(Status::Bound(description));
+    let toggle = press_to_toggle();
+    if toggle {
+        log("this desktop sends no key-up: a press starts talking, the next press stops");
+    }
 
     loop {
         tokio::select! {
             Some(a) = activated.next() => {
                 if a.shortcut_id() == ID {
                     log("pressed");
-                    let _ = daemon.start_reporting();
+                    if toggle {
+                        if let Ok(now) = daemon.toggle() {
+                            log(format!("now {now}"));
+                        }
+                    } else {
+                        let _ = daemon.start_reporting();
+                    }
                 }
             }
             Some(d) = deactivated.next() => {
                 if d.shortcut_id() == ID {
-                    log("released");
-                    daemon.stop();
+                    if toggle {
+                        // The next press stops, not this release.
+                        log("released (ignored: the next press stops)");
+                    } else {
+                        log("released");
+                        daemon.stop();
+                    }
                 }
             }
             Some(c) = changed.next() => {
