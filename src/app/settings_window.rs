@@ -67,7 +67,8 @@ fn build(ui: &Rc<Ui>) -> Rc<SettingsWindow> {
     let window = gtk::Window::builder().application(&ui.app).title("Caw Settings").default_width(560).default_height(600).hide_on_close(true).build();
     let column = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(12).margin_top(20).margin_bottom(20).margin_start(20).margin_end(20).build();
 
-    column.append(&heading("Hold-to-talk key"));
+    // GNOME: pressed to start and again to stop, not held.
+    column.append(&heading(if super::talk_key::press_to_toggle() { "Talk key" } else { "Hold-to-talk key" }));
     let bound = gtk::Label::builder().xalign(0.0).wrap(true).build();
     column.append(&bound);
     let key_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
