@@ -126,7 +126,7 @@ depends = "$auto, libwebkitgtk-6.0-4, xdg-desktop-portal"
 recommends = "libnotify-bin, xdg-utils"
 suggests = "wtype"
 extended-description = """\
-Hold a key and talk: Caw types what you said at the cursor, in any window. \
+Press the talk key and speak: Caw types what you said at the cursor, in any window. \
 Speech recognition (Moonshine) runs on this computer and never goes online. \
 The Caw phone app can also type here, move the mouse and press keys, over the \
 local network. A tray icon turns dictation and phones on and off, and opens \
